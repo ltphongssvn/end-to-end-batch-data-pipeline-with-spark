@@ -1,0 +1,55 @@
+# .gitignore
+
+# --- Python / uv ---
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# NOTE: uv.lock and mise.lock ARE committed. They are lockfiles, not artifacts:
+# they are what makes the toolchain and dependency graph reproducible in CI and
+# on a second machine. Only .venv/ is a build artifact.
+
+# --- mise ---
+mise.local.toml
+mise.local.lock
+
+# --- Local data lake (raw/curated/serving) ---
+# Source data is downloaded by pipeline code, never committed. WDI_csv.zip alone
+# is ~60MB and would poison the repo history permanently.
+data/
+datalake/
+*.zip
+*.parquet
+*.csv
+*.json
+!tests/**/*.json
+!tests/**/*.csv
+
+# --- Delta Lake local artifacts ---
+_delta_log/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# --- Secrets / Databricks auth ---
+.env
+.env.*
+!.env.example
+.databrickscfg
+*.pem
+*.key
+
+# --- Databricks bundle state ---
+.databricks/
+
+# --- macOS / editors ---
+.DS_Store
+.idea/
+.vscode/
+!.vscode/settings.json

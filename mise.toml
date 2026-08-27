@@ -1,0 +1,30 @@
+# mise.toml
+# Declarative runtime toolchain, pinned to the Databricks target envelope.
+#
+# TARGET: Databricks Free Edition -> serverless compute -> environment version 5
+#   Released 2026-02-25, end-of-support 2029-02-25
+#   Python 3.12.3 | JDK 17 | Scala 2.13.16 | Databricks Connect 18 | Ubuntu 24.04.3
+#   https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/
+#
+# WHY EXACT PINS: serverless runs Spark Connect. The client and server must share
+# the same Python MINOR version or every Python UDF fails with
+# "Python versions in the Spark Connect client and server are different."
+# Project 2 of this liveProject is entirely UDF work, so drift here is fatal,
+# not cosmetic. Local == remote is the root fix; version-chasing is the treadmill.
+
+[tools]
+# Vendor prefix is mandatory: mise's default Java vendor is OpenJDK, not Temurin.
+# Bare "java@17" silently resolves to a different build than Databricks ships.
+java = "temurin-17"
+
+# uv owns the Python interpreter and dependency graph; mise pins uv itself so the
+# resolver version is reproducible too. Python version lives in .python-version.
+uv = "latest"
+
+[settings]
+# mise.lock: exact versions, download URLs, checksums, and provenance,
+# cryptographically verified at lock time. Committed to git.
+lockfile = true
+
+# Supply-chain guard: never install a tool release younger than 7 days.
+install_before = "7d"
