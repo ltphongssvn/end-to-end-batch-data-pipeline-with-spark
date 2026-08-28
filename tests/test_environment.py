@@ -52,6 +52,17 @@ def test_java_home_is_jdk_17() -> None:
     assert '"17.' in banner, f"Expected JDK 17, got: {banner.splitlines()[0]}"
     assert "Temurin" in banner, f"Expected a Temurin build, got: {banner.splitlines()[1]}"
 
+    # Version alone is not enough. CI runners ship their own Temurin 17 and
+    # export JAVA_HOME pointing at it, so a version-only assertion passes on a
+    # JDK that mise never installed and mise.lock never verified. Asserting the
+    # PATH proves the JVM Spark launches is the pinned, checksummed one.
+    resolved = Path(java_home).resolve()
+    assert "mise" in resolved.parts, (
+        f"JAVA_HOME is not mise-managed: {resolved}. "
+        "PySpark locates the JVM via JAVA_HOME, so Spark would run on an "
+        "unpinned JDK regardless of what `java -version` reports on PATH."
+    )
+
 
 def test_spark_major_minor_is_4_0(spark: SparkSession) -> None:
     assert spark.version.startswith("4.0."), f"Expected Spark 4.0.x, found {spark.version}"

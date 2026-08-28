@@ -52,12 +52,24 @@ jobs:
           install: true
           cache: true
 
+      - name: Export JAVA_HOME from mise
+        # GitHub runners ship a pre-installed JDK and export JAVA_HOME pointing
+        # at it. mise-action prepends its tool bins to PATH but does NOT
+        # override that variable, so `java` resolved to mise while JAVA_HOME
+        # still pointed at /usr/lib/jvm/*. PySpark locates the JVM via
+        # JAVA_HOME, so Spark would silently run on the runner's JDK instead of
+        # the version pinned in mise.lock. It passed only because Ubuntu's
+        # preinstalled JDK is coincidentally Temurin 17; that coincidence is not
+        # a contract. Override it explicitly.
+        run: echo "JAVA_HOME=$(mise where java)" >> "$GITHUB_ENV"
+
       - name: Report resolved toolchain
         run: |
           mise ls
           java -version
           uv --version
           echo "JAVA_HOME=$JAVA_HOME"
+          command -v java
 
       - name: Restore uv cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
