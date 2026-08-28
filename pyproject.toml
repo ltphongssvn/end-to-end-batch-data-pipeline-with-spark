@@ -84,6 +84,27 @@ python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true
 
+[tool.pydantic-mypy]
+# WITHOUT init_typed THE PLUGIN SYNTHESIZES EVERY FIELD AS `Any`.
+# That is its default, and deliberately so: Pydantic coerces in lax mode, so a
+# typed __init__ can flag calls that succeed at runtime (passing "20" to an int
+# field). The cost of that default here is total: ClusterConfig(spark_version=
+# "3.5") type-checks clean, so the Literal vocabularies protect nothing at
+# author time and Axis 1 collapses to runtime-only.
+#
+# We turn it on because this project's models are contracts, not lax parsers.
+# Coercion tolerance belongs at the trust boundary, where the input is a YAML
+# string anyway and goes through model_validate rather than __init__.
+init_typed = true
+
+# Mirrors ConfigDict(extra="forbid") into the synthesized __init__, so a typo in
+# a keyword argument is a type error rather than a runtime ValidationError.
+init_forbid_extra = true
+
+# An alias that only works dynamically cannot be checked statically; warn rather
+# than let it look safe.
+warn_required_dynamic_aliases = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

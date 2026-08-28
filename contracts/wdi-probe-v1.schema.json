@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "ArchiveMember": {
+      "additionalProperties": false,
+      "description": "One file inside the WDI zip.",
+      "properties": {
+        "filename": {
+          "minLength": 1,
+          "title": "Filename",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filename",
+        "size_bytes"
+      ],
+      "title": "ArchiveMember",
+      "type": "object"
+    },
+    "SchemaVersion": {
+      "const": "wdi-probe/v1",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Validated description of the WDI wide-format CSV schema.\n\nDeliberately flat and primitively typed: an agent reads year_columns[-1]\nwithout walking a nested tree, and every number is a number rather than a\nstring like \"70 columns\".",
+  "properties": {
+    "identifier_headers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Identifier Headers",
+      "type": "array"
+    },
+    "member": {
+      "title": "Member",
+      "type": "string"
+    },
+    "members": {
+      "items": {
+        "$ref": "#/$defs/ArchiveMember"
+      },
+      "title": "Members",
+      "type": "array"
+    },
+    "probed_at": {
+      "format": "date-time",
+      "title": "Probed At",
+      "type": "string"
+    },
+    "sample_row_widths": {
+      "items": {
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "title": "Sample Row Widths",
+      "type": "array"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/SchemaVersion",
+      "default": "wdi-probe/v1"
+    },
+    "source_path": {
+      "title": "Source Path",
+      "type": "string"
+    },
+    "source_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Source Sha256",
+      "type": "string"
+    },
+    "total_columns": {
+      "exclusiveMinimum": 0,
+      "title": "Total Columns",
+      "type": "integer"
+    },
+    "trailing_empty_header": {
+      "title": "Trailing Empty Header",
+      "type": "boolean"
+    },
+    "year_columns": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Year Columns",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_path",
+    "source_sha256",
+    "member",
+    "total_columns",
+    "identifier_headers",
+    "year_columns",
+    "trailing_empty_header",
+    "sample_row_widths",
+    "members",
+    "probed_at"
+  ],
+  "title": "WdiProbeResult",
+  "type": "object"
+}

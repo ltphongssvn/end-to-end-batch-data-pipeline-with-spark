@@ -71,7 +71,7 @@ description = "The quality gate. CI runs exactly this task; nothing is restated 
 # with `git commit --no-verify`, has never been scanned. CI is the layer where
 # a bypass is caught, which is the whole reason CI must not merely mirror the
 # hooks -- it must be strictly broader.
-depends = ["lint", "types", "test", "check:config", "check:leaks-history"]
+depends = ["lint", "types", "test", "check:config", "check:contracts", "check:leaks-history"]
 run = "uv run ruff format --check ."
 
 [tasks.pr]
@@ -265,4 +265,44 @@ lefthook install
 echo
 echo "setup complete. hooks active:"
 ls .git/hooks | grep -vE '\.sample$' | sed 's/^/  /'
+'''
+
+[tasks."contracts:update"]
+description = "Regenerate committed JSON Schema contracts from the Pydantic models"
+# The schema file is a build artifact of the model, never hand-edited. Running
+# this is the deliberate act that records a contract change, and the diff it
+# produces is what a reviewer reads in the PR.
+run = "uv run python -m spark_batch_pipeline.contracts"
+
+[tasks."check:contracts"]
+description = "Fail if the committed contracts drift from the models"
+# Regenerate into a temp dir and diff. Running the generator in CI and diffing
+# is what makes the committed artifact authoritative: a model change that skips
+# contracts:update cannot merge.
+run = '''
+set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+uv run python -c "
+from pathlib import Path
+from spark_batch_pipeline.contracts import write_all
+write_all(Path('$tmp'))
+" >/dev/null
+diff -u contracts "$tmp"
+
+# TRACKED-NESS IS PART OF THE CONTRACT. Regenerating and diffing only proves the
+# file on disk matches the model; it says nothing about whether git will ship
+# it. A .gitignore rule once hid this exact file and every check still passed.
+# ls-files --error-unmatch fails when a path is untracked or ignored, so a
+# deliverable can never again be silently excluded.
+for schema in contracts/*.schema.json; do
+  if ! git ls-files --error-unmatch "$schema" >/dev/null 2>&1; then
+    echo "contract not tracked by git: $schema" >&2
+    echo "it exists on disk but will not reach the repository or CI." >&2
+    echo "check: git check-ignore -v $schema" >&2
+    exit 1
+  fi
+done
+
+echo "contracts up to date and tracked"
 '''

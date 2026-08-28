@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal, get_args
 
 import yaml
 from pydantic import (
@@ -38,7 +38,17 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Databricks Free Edition -> serverless -> environment version 5.
-SUPPORTED_SPARK_VERSIONS: frozenset[str] = frozenset({"4.0", "4.1"})
+#
+# SCHEMA-FIRST SSOT: the Literal alias is the ONE definition. The runtime tuple
+# derives from it, so the permitted list cannot drift from the declared type.
+# Previously this was a frozenset checked by a custom validator while the field
+# stayed `str` -- nothing derived, so a bad version type-checked cleanly and
+# failed only at runtime.
+#
+# Gotcha: on a PEP 695 `type` alias you must read .__value__ before get_args,
+# or the tuple comes back empty and the vocabulary silently vanishes.
+type SparkVersion = Literal["4.0", "4.1"]
+SUPPORTED_SPARK_VERSIONS: Final[tuple[str, ...]] = get_args(SparkVersion.__value__)
 
 # Databricks secret references look like {{secrets/<scope>/<key>}}. Anything else
 # carrying a credential shape is rejected outright.
@@ -76,24 +86,13 @@ class ClusterConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
-    spark_version: str = Field(description="Spark major.minor, e.g. '4.0'")
+    spark_version: SparkVersion = Field(description="Spark major.minor, e.g. '4.0'")
     node_type_id: str = Field(min_length=1)
     num_workers: Annotated[int, Field(ge=0, le=8)]
     # Cost guard: a cluster with no autotermination bills until someone notices.
     autotermination_minutes: Annotated[int, Field(ge=5, le=60)]
     data_security_mode: Literal["SINGLE_USER", "USER_ISOLATION"] = "SINGLE_USER"
     spark_conf: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("spark_version")
-    @classmethod
-    def _version_is_supported(cls, v: str) -> str:
-        if v not in SUPPORTED_SPARK_VERSIONS:
-            raise ValueError(
-                f"spark_version {v!r} is outside the supported envelope "
-                f"{sorted(SUPPORTED_SPARK_VERSIONS)}. Python UDFs fail at runtime "
-                "when the client and server Spark lines diverge."
-            )
-        return v
 
     @field_validator("spark_conf")
     @classmethod
