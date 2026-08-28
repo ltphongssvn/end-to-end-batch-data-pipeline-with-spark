@@ -306,3 +306,26 @@ done
 
 echo "contracts up to date and tracked"
 '''
+
+# --- Task interpreter ---------------------------------------------------------
+# PIN THE SHELL, exactly as we pin the JDK and the Python interpreter.
+#
+# mise defaults to `sh -c -o errexit -o pipefail`, and `sh` is whatever the OS
+# provides. On macOS that is bash in POSIX mode, which accepts `set -o pipefail`.
+# On the Ubuntu CI runner it is dash, which does not -- so `mise run check`
+# passed locally and died in CI with:
+#   sh: 1: set: Illegal option -o pipefail
+#
+# That is environment drift, the same class as an unpinned runtime: the task
+# body was fine, the interpreter differed. Removing pipefail would have treated
+# the symptom and left every other task one bashism away from the same failure,
+# while also giving up the guarantee that a failing stage of a pipeline fails
+# the task.
+#
+# Pinning bash here makes the interpreter identical on a laptop, in a git hook,
+# and on a CI runner. The explicit `set -euo pipefail` at the top of each
+# multi-line script is kept deliberately: it stays visible and greppable in the
+# script itself rather than being an invisible property of the runner, and under
+# bash it is guaranteed legal.
+[task_config]
+shell = "bash -c"
