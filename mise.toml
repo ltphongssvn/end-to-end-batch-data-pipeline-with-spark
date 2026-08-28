@@ -28,3 +28,56 @@ lockfile = true
 
 # Supply-chain guard: never install a tool release younger than 7 days.
 install_before = "7d"
+
+# --- Tasks -------------------------------------------------------------------
+# Declarative task runner, committed alongside the toolchain that runs it.
+# `mise run <name>` works identically on a laptop and in CI.
+
+[tasks.fmt]
+description = "Format sources in place"
+run = "uv run ruff format ."
+
+[tasks.lint]
+description = "Lint (same invocation CI uses)"
+run = "uv run ruff check ."
+
+[tasks.types]
+description = "Static type check"
+run = "uv run mypy src tests"
+
+[tasks.test]
+description = "Unit tests, excluding Databricks integration tests"
+run = "uv run pytest -m 'not integration'"
+
+[tasks.check]
+description = "Full local gate: mirrors .github/workflows/ci.yml"
+depends = ["lint", "types", "test"]
+run = "uv run ruff format --check ."
+
+[tasks.pr]
+description = "Open a PR into develop and let GitHub merge it when checks pass"
+# ROOT-CAUSE NOTE: this does NOT poll. A laptop-side polling loop (watch the PR,
+# sleep, re-check, merge) fails whenever the laptop sleeps, burns local time,
+# and re-implements state GitHub already owns. `--auto` hands the decision to
+# GitHub: the merge fires server-side the moment the required status check in
+# the 'develop-and-main-protection' ruleset reports success.
+#
+# --merge (not --squash) preserves GitFlow topology; the repo now allows only
+# merge commits, so the server enforces it rather than trusting convention.
+run = '''
+set -euo pipefail
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" = "develop" ] || [ "$branch" = "main" ]; then
+  echo "refusing: on protected branch '$branch'; work on a feature branch" >&2
+  exit 1
+fi
+git push -u origin "$branch"
+gh pr create --base develop --head "$branch" --fill
+gh pr merge --auto --merge --delete-branch
+gh pr view --json number,autoMergeRequest,mergeStateStatus \
+  --jq '{pr:.number, auto:(.autoMergeRequest != null), state:.mergeStateStatus}'
+'''
+
+[tasks.pr-status]
+description = "Show merge state and checks for the current branch's PR"
+run = "gh pr view --json number,title,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup --jq '{pr:.number,title,mergeable,state:.mergeStateStatus,auto:(.autoMergeRequest != null),checks:[.statusCheckRollup[]|{name,conclusion}]}'"
