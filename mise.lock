@@ -5,7 +5,10 @@ lockfile_version = 1
 [[tools.betterleaks]]
 version = "1.8.1"
 backend = "aqua:betterleaks/betterleaks"
-specifiers = ["latest"]
+specifiers = [
+    "1.8.1",
+    "latest",
+]
 
 [tools.betterleaks."platforms.linux-arm64"]
 checksum = "sha256:bbb578b12a2f65d7082ab436abf37724232bc71d8a078e3c41336574420f1b48"
@@ -121,7 +124,10 @@ url = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0
 [[tools.lefthook]]
 version = "2.1.10"
 backend = "aqua:evilmartians/lefthook"
-specifiers = ["latest"]
+specifiers = [
+    "2.1.10",
+    "latest",
+]
 
 [tools.lefthook."platforms.linux-arm64"]
 checksum = "sha256:6380a6ad6dd484466fd69bd83f24491d6ec27dc0b84e837be025620f7c4e11e3"
@@ -168,7 +174,10 @@ provenance = "github-attestations"
 [[tools.uv]]
 version = "0.12.5"
 backend = "aqua:astral-sh/uv"
-specifiers = ["latest"]
+specifiers = [
+    "0.12.5",
+    "latest",
+]
 
 [tools.uv."platforms.linux-arm64"]
 checksum = "sha256:9bf43b4d1a07665bf64d4c4e710930b382321a785e0eb10aac07f46471f86a31"

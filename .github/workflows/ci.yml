@@ -30,7 +30,11 @@ permissions:
 
 jobs:
   quality-gate:
-    name: lint, types, tests
+    name: quality gate
+    # This string is the `context` the branch ruleset matches on. Renaming it
+    # without updating the ruleset leaves the required check waiting forever on
+    # a name nothing reports, and every PR sits BLOCKED. The two are changed
+    # together, in this commit.
     runs-on: ubuntu-latest
     timeout-minutes: 20
 

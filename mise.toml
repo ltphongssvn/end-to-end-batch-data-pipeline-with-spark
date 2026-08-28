@@ -13,15 +13,22 @@
 # not cosmetic. Local == remote is the root fix; version-chasing is the treadmill.
 
 [tools]
-betterleaks = "latest"
+# EXPLICIT PINS, NOT "latest". mise.lock records the resolved version, but with
+# a floating spec `mise install` on a new machine is free to resolve something
+# newer and then rewrite the lock -- so the lock documents history instead of
+# constraining the future. A literal version makes the lock enforce rather than
+# merely record. Upgrades become a reviewable diff via `mise upgrade --bump`,
+# which matters most for betterleaks: a security tool should change when someone
+# decides it changes, not when someone happens to run install.
+betterleaks = "1.8.1"
 # Vendor prefix is mandatory: mise's default Java vendor is OpenJDK, not Temurin.
 # Bare "java@17" silently resolves to a different build than Databricks ships.
 java = "temurin-17"
-lefthook = "latest"
+lefthook = "2.1.10"
 
 # uv owns the Python interpreter and dependency graph; mise pins uv itself so the
 # resolver version is reproducible too. Python version lives in .python-version.
-uv = "latest"
+uv = "0.12.5"
 
 [settings]
 # mise.lock: exact versions, download URLs, checksums, and provenance,
