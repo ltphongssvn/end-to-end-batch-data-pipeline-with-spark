@@ -21,7 +21,10 @@ cluster:
 sources:
   - name: wdi
     format: csv
-    url: https://databank.worldbank.org/data/download/WDI_csv.zip
+    # The PDF specifies WDI_csv.zip. That path 301s to a 404: the World Bank
+    # renamed the file WDI_CSV.zip (uppercase) and the path is case sensitive.
+    # Verified 2026-08-28: 200, 282,845,220 bytes, last-modified 2026-07-15.
+    url: https://databank.worldbank.org/data/download/WDI_CSV.zip
     partition_by: [year, month, day]
   - name: eea_co2
     format: json
