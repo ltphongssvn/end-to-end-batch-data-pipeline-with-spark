@@ -1,6 +1,14 @@
 # pyproject.toml
 # Single source of truth for project metadata, dependencies, and tool config.
-# Deps are added via `uv add` (never hand-edited) so uv.lock stays authoritative.
+#
+# LAYER 1 of 2 in the reproducibility model:
+#   mise.toml + mise.lock -> system runtimes (JDK 17, uv)
+#   pyproject.toml + uv.lock -> Python interpreter, libraries, dev tooling
+#
+# Dependencies are DECLARED here, not accumulated by a sequence of `uv add`
+# calls. uv resolves every group together into one lockfile, so a single
+# `uv sync` yields one consistent solution; sequential adds re-resolve the whole
+# graph each time and can leave intermediate states in git history.
 
 [project]
 name = "spark-batch-pipeline"
@@ -8,15 +16,43 @@ version = "0.1.0"
 description = "End-to-end batch data pipeline: WDI + EEA CO2 -> raw/curated/serving lakehouse on Delta"
 readme = "README.md"
 requires-python = "==3.12.*"
-dependencies = []
+
+# Runtime deps pinned to the Databricks serverless env v5 envelope (Spark 4.0).
+# delta-spark moves in lockstep with Spark: 4.0.x <-> 4.0.x.
+dependencies = [
+  "pyspark[connect]==4.0.*",
+  "delta-spark==4.0.*",
+]
 
 [build-system]
 requires = ["uv_build>=0.12,<0.13"]
 build-backend = "uv_build"
 
+# PEP 735 dependency groups: portable across package managers, never shipped in
+# a built distribution, and never installed by consumers of this package.
+[dependency-groups]
+test = [
+  "pytest>=8",
+  "pytest-cov>=6",
+  "chispa>=0.11",          # DataFrame equality assertions; named in Databricks CI guidance
+]
+lint = [
+  "ruff>=0.9",
+]
+typing = [
+  "mypy>=1.14",
+]
+# `dev` is uv's default-synced group. Composing it from the others means one
+# `uv sync` gives a complete local environment with no extra flags.
+dev = [
+  { include-group = "test" },
+  { include-group = "lint" },
+  { include-group = "typing" },
+]
+
 [tool.uv]
-# Do not resolve dependency releases younger than 1 week: gives bad metadata,
-# yanked builds, and compromised packages time to surface before we consume them.
+# Refuse dependency releases younger than one week: yanked builds, bad metadata,
+# and compromised packages surface before we consume them.
 exclude-newer = "1 week"
 
 [tool.uv.build-backend]
@@ -30,10 +66,16 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "PTH", "RUF"]
 
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra --strict-markers"
 markers = [
   "integration: requires a live Databricks connection (deselect with -m 'not integration')",
+  "local_spark: depends on Spark Classic internals; no Spark Connect equivalent",
 ]
