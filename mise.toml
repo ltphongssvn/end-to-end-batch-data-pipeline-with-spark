@@ -81,3 +81,25 @@ gh pr view --json number,autoMergeRequest,mergeStateStatus \
 [tasks.pr-status]
 description = "Show merge state and checks for the current branch's PR"
 run = "gh pr view --json number,title,mergeable,mergeStateStatus,autoMergeRequest,statusCheckRollup --jq '{pr:.number,title,mergeable,state:.mergeStateStatus,auto:(.autoMergeRequest != null),checks:[.statusCheckRollup[]|{name,conclusion}]}'"
+
+[tasks.sync]
+description = "Return to develop, pull, and prune branches whose remote is gone"
+# Auto-merge deletes the REMOTE branch but cannot touch your local clone, so
+# local branches accumulate in a 'gone' state after every merged PR. Encoding
+# the cleanup here keeps it a committed step instead of tribal knowledge.
+# Uses `git branch -d` (safe delete): refuses to drop anything not fully merged,
+# so an unmerged branch that merely lost its remote is never silently lost.
+run = '''
+set -euo pipefail
+git switch develop
+git pull --ff-only
+git remote prune origin
+gone="$(git for-each-ref --format '%(refname:short) %(upstream:track)' refs/heads \
+  | awk '$2 == "[gone]" {print $1}')"
+if [ -z "$gone" ]; then
+  echo "no stale local branches"
+else
+  echo "$gone" | xargs -n1 git branch -d
+fi
+git branch -vv
+'''
