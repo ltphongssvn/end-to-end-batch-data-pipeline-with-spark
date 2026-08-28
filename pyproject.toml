@@ -22,6 +22,10 @@ requires-python = "==3.12.*"
 dependencies = [
   "pyspark[connect]==4.0.*",
   "delta-spark==4.0.*",
+  "pydantic>=2.13.4",
+  "pydantic-settings>=2.15.0",
+  "pyyaml>=6.0.3",
+  "types-pyyaml>=6.0.12.20260815",
 ]
 
 [build-system]
@@ -67,6 +71,9 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "PTH", "RUF"]
 
 [tool.mypy]
+# The Pydantic plugin teaches mypy about model __init__ signatures and
+# validators; without it the config models are invisible to our own type gate.
+plugins = ["pydantic.mypy"]
 python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true

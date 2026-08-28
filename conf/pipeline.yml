@@ -1,0 +1,29 @@
+# conf/pipeline.yml
+# Validated against spark_batch_pipeline.config.PipelineConfig at commit time.
+# Credentials never appear here: they come from DATABRICKS_* environment
+# variables via DatabricksSettings.
+name: wdi-eea-batch
+
+raw_path: /datalake/raw
+curated_path: /datalake/curated
+serving_path: /datalake/serving
+
+cluster:
+  spark_version: "4.0"
+  node_type_id: Standard_DS3_v2
+  num_workers: 2
+  autotermination_minutes: 20
+  data_security_mode: SINGLE_USER
+  spark_conf:
+    spark.sql.session.timeZone: UTC
+    spark.databricks.delta.optimizeWrite.enabled: "true"
+
+sources:
+  - name: wdi
+    format: csv
+    url: https://databank.worldbank.org/data/download/WDI_csv.zip
+    partition_by: [year, month, day]
+  - name: eea_co2
+    format: json
+    url: https://discodata.eea.europa.eu/sql
+    partition_by: [year]
