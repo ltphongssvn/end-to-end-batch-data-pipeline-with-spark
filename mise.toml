@@ -115,9 +115,25 @@ description = "Block until the current branch's PR checks finish, then report me
 # exits on its own when every check reaches a terminal state. --interval caps
 # the request rate. Because the PR is already opened with --auto, this task only
 # OBSERVES; GitHub performs the merge server-side whether or not this is running.
+#
+# Checks going green is NOT the same event as the merge landing. GitHub queues
+# the auto-merge after the last check reports, so reading state the instant
+# --watch returns shows OPEN/CLEAN on a PR that merges a few seconds later.
+# After the checks settle, poll the PR state itself with a bounded budget and a
+# real interval: 20 polls x 6s caps this at 2 minutes and 20 API calls, so it
+# cannot spin against the rate limit and cannot hang a terminal forever.
 run = '''
 set -euo pipefail
 gh pr checks --watch --interval 10 || true
+
+for _ in $(seq 1 20); do
+  state="$(gh pr view --json state --jq .state)"
+  case "$state" in
+    MERGED|CLOSED) break ;;
+  esac
+  sleep 6
+done
+
 gh pr view --json number,state,mergedAt,mergeCommit,mergeStateStatus \
   --jq '{pr:.number, state, mergedAt, commit:.mergeCommit.oid, mergeState:.mergeStateStatus}'
 '''
