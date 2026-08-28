@@ -1,0 +1,86 @@
+# lefthook.yml
+# Git hooks manager: enforces the repository's standards at the moment code is
+# written, not after it reaches CI.
+#
+# DESIGN RULE -- every command is `mise run <task>` and nothing else.
+# Tool versions live in mise.toml / mise.lock / uv.lock. If a hook invoked
+# `ruff` or `betterleaks` directly it would become a second place versions are
+# implied, and the two would drift. This file therefore contains zero version
+# strings and zero tool paths. It is pure orchestration.
+#
+# Local hooks and CI run the SAME tasks, so a green commit means a green
+# pipeline. Divergence between the two is the failure this design removes.
+
+# Quieten routine output so a real failure is the only thing that stands out.
+# lefthook 2.x expects an object here; the 1.x array form fails validation with
+# "Value is array but should be object".
+output:
+  - failure
+  - execution_info
+
+pre-commit:
+  parallel: false   # priority ordering below is load-bearing; see each comment
+  commands:
+
+    # 1. FORMAT FIRST. Formatting rewrites files, so it must run before any
+    #    check reads them. stage_fixed re-stages the rewrite, so the commit
+    #    contains the formatted result rather than failing and making the
+    #    developer re-run `git add`.
+    format:
+      priority: 1
+      glob: "*.py"
+      run: mise run fmt
+      stage_fixed: true
+
+    # 2. LINT the staged Python. Runs after formatting so it never reports an
+    #    issue the formatter was about to fix.
+    lint:
+      priority: 2
+      glob: "*.py"
+      run: mise run lint
+
+    # 3. SECRETS. Scans the INDEX only, so cost scales with the change, not the
+    #    repo -- this is what keeps the hook fast enough that nobody disables
+    #    it. Deliberately not restricted by glob: a credential can land in YAML,
+    #    JSON, a notebook, or a shell script just as easily as in Python.
+    secrets:
+      priority: 3
+      run: mise run check:leaks-staged
+
+    # 4. DATA GOVERNANCE. Validates cluster and pipeline config against the
+    #    Pydantic schema: supported Spark version, autotermination present,
+    #    worker ceiling, distinct lakehouse layers, no inline credentials.
+    #    These are the mistakes that bill money or destroy data, and they are
+    #    caught here rather than on the cluster.
+    config:
+      priority: 4
+      glob: "conf/*.yml"
+      run: mise run check:config
+
+    # 5. TYPES. Whole-project, no file list: mypy needs the full import graph,
+    #    and a staged-file subset produces false results on cross-module changes.
+    types:
+      priority: 5
+      glob: "*.py"
+      run: mise run types
+
+commit-msg:
+  commands:
+    conventional:
+      # Conventional Commits, enforced by a task rather than an extra npm tool.
+      run: mise run check:commit-msg {1}
+
+pre-push:
+  parallel: true    # independent checks; no ordering constraint here
+  commands:
+
+    # Depth pass: the pre-commit hook only sees the current change, so a secret
+    # committed before hooks existed would never be caught. This scans the whole
+    # history before anything leaves the machine.
+    secrets-history:
+      run: mise run check:leaks-history
+
+    # Full suite. Slower than pre-commit tolerates, but a push is the last point
+    # before CI, and failing here costs seconds instead of a red pipeline.
+    tests:
+      run: mise run test
