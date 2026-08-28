@@ -71,7 +71,7 @@ description = "The quality gate. CI runs exactly this task; nothing is restated 
 # with `git commit --no-verify`, has never been scanned. CI is the layer where
 # a bypass is caught, which is the whole reason CI must not merely mirror the
 # hooks -- it must be strictly broader.
-depends = ["lint", "types", "test", "check:config", "check:leaks-history"]
+depends = ["lint", "types", "test", "check:config", "check:contracts", "check:leaks-history"]
 run = "uv run ruff format --check ."
 
 [tasks.pr]
@@ -266,3 +266,66 @@ echo
 echo "setup complete. hooks active:"
 ls .git/hooks | grep -vE '\.sample$' | sed 's/^/  /'
 '''
+
+[tasks."contracts:update"]
+description = "Regenerate committed JSON Schema contracts from the Pydantic models"
+# The schema file is a build artifact of the model, never hand-edited. Running
+# this is the deliberate act that records a contract change, and the diff it
+# produces is what a reviewer reads in the PR.
+run = "uv run python -m spark_batch_pipeline.contracts"
+
+[tasks."check:contracts"]
+description = "Fail if the committed contracts drift from the models"
+# Regenerate into a temp dir and diff. Running the generator in CI and diffing
+# is what makes the committed artifact authoritative: a model change that skips
+# contracts:update cannot merge.
+run = '''
+set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+uv run python -c "
+from pathlib import Path
+from spark_batch_pipeline.contracts import write_all
+write_all(Path('$tmp'))
+" >/dev/null
+diff -u contracts "$tmp"
+
+# TRACKED-NESS IS PART OF THE CONTRACT. Regenerating and diffing only proves the
+# file on disk matches the model; it says nothing about whether git will ship
+# it. A .gitignore rule once hid this exact file and every check still passed.
+# ls-files --error-unmatch fails when a path is untracked or ignored, so a
+# deliverable can never again be silently excluded.
+for schema in contracts/*.schema.json; do
+  if ! git ls-files --error-unmatch "$schema" >/dev/null 2>&1; then
+    echo "contract not tracked by git: $schema" >&2
+    echo "it exists on disk but will not reach the repository or CI." >&2
+    echo "check: git check-ignore -v $schema" >&2
+    exit 1
+  fi
+done
+
+echo "contracts up to date and tracked"
+'''
+
+# --- Task interpreter ---------------------------------------------------------
+# PIN THE SHELL, exactly as we pin the JDK and the Python interpreter.
+#
+# mise defaults to `sh -c -o errexit -o pipefail`, and `sh` is whatever the OS
+# provides. On macOS that is bash in POSIX mode, which accepts `set -o pipefail`.
+# On the Ubuntu CI runner it is dash, which does not -- so `mise run check`
+# passed locally and died in CI with:
+#   sh: 1: set: Illegal option -o pipefail
+#
+# That is environment drift, the same class as an unpinned runtime: the task
+# body was fine, the interpreter differed. Removing pipefail would have treated
+# the symptom and left every other task one bashism away from the same failure,
+# while also giving up the guarantee that a failing stage of a pipeline fails
+# the task.
+#
+# Pinning bash here makes the interpreter identical on a laptop, in a git hook,
+# and on a CI runner. The explicit `set -euo pipefail` at the top of each
+# multi-line script is kept deliberately: it stays visible and greppable in the
+# script itself rather than being an invisible property of the runner, and under
+# bash it is guaranteed legal.
+[task_config]
+shell = "bash -c"

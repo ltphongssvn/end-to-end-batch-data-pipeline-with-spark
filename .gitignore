@@ -20,16 +20,26 @@ mise.local.toml
 mise.local.lock
 
 # --- Local data lake (raw/curated/serving) ---
-# Source data is downloaded by pipeline code, never committed. WDI_csv.zip alone
-# is ~60MB and would poison the repo history permanently.
-data/
-datalake/
-*.zip
-*.parquet
-*.csv
-*.json
-!tests/**/*.json
-!tests/**/*.csv
+# Source data is downloaded by pipeline code, never committed. WDI_CSV.zip alone
+# is 283MB and would poison the repo history permanently.
+#
+# DENY BY DIRECTORY, NOT BY EXTENSION.
+# This block previously carried a bare `*.json`, which silently swallowed
+# contracts/wdi-probe-v1.schema.json -- the published schema external consumers
+# pin against. Nothing failed: the local gate diffs the file on disk, so the
+# contract simply would never have reached the repository or CI. An ignore rule
+# that hides a deliverable is worse than a large file, because it is silent.
+#
+# The old rule needed `!tests/**/*.json` negations to claw back files it should
+# never have matched. Negations are fragile -- Git stops descending into an
+# ignored directory, so a negation under one has no effect -- and needing them
+# at all is the signal that the deny rule is too broad.
+#
+# A leading slash anchors each pattern to the repository root, so data stays out
+# while source-controlled artifacts anywhere else remain visible by default.
+/data/
+/datalake/
+/.scratch/
 
 # --- Delta Lake local artifacts ---
 _delta_log/
