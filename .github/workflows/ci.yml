@@ -1,0 +1,101 @@
+# .github/workflows/ci.yml
+# Quality gate. Enforces the same toolchain contract that mise.toml and uv.lock
+# declare, so "works on my Mac" cannot diverge from what lands on develop/main.
+#
+# SINGLE SOURCE OF TRUTH: the JDK comes from mise.toml via mise-action, NOT from
+# actions/setup-java with a hardcoded "17". A duplicated version string in this
+# file is a second place to forget when the Databricks target moves.
+#
+# SUPPLY CHAIN: actions are pinned to immutable commit SHAs, not tags. A tag is
+# a mutable pointer the upstream owner can move to an arbitrary commit; a SHA
+# cannot be repointed. Trailing comments record the human-readable version.
+# To refresh a pin after reviewing upstream changes:
+#   gh api repos/<owner>/<repo>/git/ref/tags/<tag> --jq .object.sha
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "feature/**", "release/**", "hotfix/**"]
+  pull_request:
+    branches: [main, develop]
+
+# Cancel superseded runs on the same ref; stale CI is wasted minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    name: lint, types, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # mise refuses to load an untrusted config; the checkout is trusted here
+      # because it IS the repository under test.
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+      UV_CACHE_DIR: /tmp/.uv-cache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install toolchain from mise.toml
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+        with:
+          # Installs the exact versions recorded in mise.lock: Temurin JDK 17
+          # and uv, checksum-verified. No version strings duplicated here.
+          install: true
+          cache: true
+
+      - name: Export JAVA_HOME from mise
+        # GitHub runners ship a pre-installed JDK and export JAVA_HOME pointing
+        # at it. mise-action prepends its tool bins to PATH but does NOT
+        # override that variable, so `java` resolved to mise while JAVA_HOME
+        # still pointed at /usr/lib/jvm/*. PySpark locates the JVM via
+        # JAVA_HOME, so Spark would silently run on the runner's JDK instead of
+        # the version pinned in mise.lock. It passed only because Ubuntu's
+        # preinstalled JDK is coincidentally Temurin 17; that coincidence is not
+        # a contract. Override it explicitly.
+        run: echo "JAVA_HOME=$(mise where java)" >> "$GITHUB_ENV"
+
+      - name: Report resolved toolchain
+        run: |
+          mise ls
+          java -version
+          uv --version
+          echo "JAVA_HOME=$JAVA_HOME"
+          command -v java
+
+      - name: Restore uv cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/.uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: uv-${{ runner.os }}-
+
+      - name: Install dependencies (fails if uv.lock is stale)
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy src tests
+
+      - name: Tests
+        # Integration tests need live Databricks credentials and are excluded
+        # from the default gate; they run in a separate workflow once bundles
+        # are wired up.
+        run: uv run pytest -m "not integration" --cov=src --cov-report=term-missing
+
+      - name: Trim uv cache
+        if: always()
+        run: uv cache prune --ci
