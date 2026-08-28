@@ -52,8 +52,19 @@ description = "Unit tests, excluding Databricks integration tests"
 run = "uv run pytest -m 'not integration'"
 
 [tasks.check]
-description = "Full local gate: mirrors .github/workflows/ci.yml"
-depends = ["lint", "types", "test"]
+description = "The quality gate. CI runs exactly this task; nothing is restated in ci.yml"
+# SINGLE SOURCE OF TRUTH. Earlier, ci.yml listed lint/format/types/test as
+# separate steps -- a second copy of this list that would drift the moment a
+# check was added here and forgotten there. ci.yml now runs `mise run check` and
+# nothing else, so adding a dependency below extends local runs, the Lefthook
+# hooks, and the merge requirement simultaneously.
+#
+# check:leaks-history rather than check:leaks: the pre-commit hook only ever saw
+# the incoming change, so anything committed before hooks existed, or pushed
+# with `git commit --no-verify`, has never been scanned. CI is the layer where
+# a bypass is caught, which is the whole reason CI must not merely mirror the
+# hooks -- it must be strictly broader.
+depends = ["lint", "types", "test", "check:config", "check:leaks-history"]
 run = "uv run ruff format --check ."
 
 [tasks.pr]

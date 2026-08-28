@@ -81,20 +81,20 @@ jobs:
       - name: Install dependencies (fails if uv.lock is stale)
         run: uv sync --locked
 
-      - name: Lint
-        run: uv run ruff check --output-format=github .
-
-      - name: Format check
-        run: uv run ruff format --check .
-
-      - name: Type check
-        run: uv run mypy src tests
-
-      - name: Tests
-        # Integration tests need live Databricks credentials and are excluded
-        # from the default gate; they run in a separate workflow once bundles
-        # are wired up.
-        run: uv run pytest -m "not integration" --cov=src --cov-report=term-missing
+      - name: Quality gate
+        # Deliberately ONE step calling ONE task. The gate is defined in
+        # mise.toml ([tasks.check]) so that a laptop, a Lefthook hook, and this
+        # runner execute the identical set of checks. Listing lint/format/types/
+        # tests here again would be a second copy that drifts the first time a
+        # check is added in one place and not the other.
+        #
+        # Covers: ruff check, ruff format --check, mypy, pytest, Pydantic config
+        # governance, and a full-history secret scan. That last one is why CI is
+        # broader than the hooks rather than a mirror of them: `git commit
+        # --no-verify` bypasses every local hook, and this is where that is
+        # caught. Integration tests needing live Databricks credentials stay
+        # excluded via the pytest marker.
+        run: mise run check
 
       - name: Trim uv cache
         if: always()
