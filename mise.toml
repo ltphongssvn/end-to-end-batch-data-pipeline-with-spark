@@ -103,3 +103,21 @@ else
 fi
 git branch -vv
 '''
+
+[tasks.pr-wait]
+description = "Block until the current branch's PR checks finish, then report merge state"
+# ROOT-CAUSE NOTE: never `sleep N && check`. A fixed sleep guesses the duration,
+# so it either wastes minutes or reads state before CI reported. A bare retry
+# loop is worse: repeated `gh` calls with no backoff can exhaust the 5,000/hour
+# REST rate limit and lock the CLI out for the rest of the hour.
+#
+# `gh pr checks --watch` is event-driven: it blocks, streams state changes, and
+# exits on its own when every check reaches a terminal state. --interval caps
+# the request rate. Because the PR is already opened with --auto, this task only
+# OBSERVES; GitHub performs the merge server-side whether or not this is running.
+run = '''
+set -euo pipefail
+gh pr checks --watch --interval 10 || true
+gh pr view --json number,state,mergedAt,mergeCommit,mergeStateStatus \
+  --jq '{pr:.number, state, mergedAt, commit:.mergeCommit.oid, mergeState:.mergeStateStatus}'
+'''
