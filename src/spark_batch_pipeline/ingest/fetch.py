@@ -10,8 +10,8 @@ Guarantees:
 
 IDEMPOTENT   A completed fetch with a matching manifest is skipped. A re-run
              costs a checksum pass over local disk, not 283 MB of transfer.
-RESUMABLE    Partial downloads persist as `.part` and resume via an HTTP Range
-             request. A drop at 250 MB does not restart from zero.
+RESUMABLE    Partial downloads persist as a staged file and resume via an HTTP
+             Range request. A drop at 250 MB does not restart from zero.
 BOUNDED      Explicit connect/read timeouts plus bounded retries with
              exponential backoff. A hung socket fails in seconds, not never.
 ATTESTED     Each fetch writes a manifest with url, sha256, size, server ETag
@@ -19,8 +19,17 @@ ATTESTED     Each fetch writes a manifest with url, sha256, size, server ETag
              is an ingestion timestamp, a source identifier, and a checksum
              validating integrity against source -- without those, "reprocess
              from raw" is an act of faith.
-ATOMIC       The artifact appears at its final path only when complete, so no
-             reader ever observes a half-written raw file.
+
+COMMIT PROTOCOL, both phases symmetrical:
+    stage bytes    -> publish artifact  (atomic + durable)
+    render manifest -> publish manifest (atomic + durable)
+The artifact is published first, so a crash between the phases leaves ORPHAN
+DATA: a complete file that no manifest references. That is the Iceberg model
+and it is the safe direction of failure, because the next run redoes the step.
+
+A truncated manifest would be worse than a missing one -- missing means "redo",
+truncated means the next run dies parsing it. So the manifest is published
+atomically, and an unreadable manifest is treated as absent rather than fatal.
 
 HTTP CLIENT: httpx, not requests (feature-frozen, no HTTP/2) and not urllib
 (no timeouts or retries without hand-rolling both).
@@ -30,6 +39,15 @@ and databank.worldbank.org 301s to databankfiles.worldbank.org. Without
 follow_redirects=True this writes a 193-byte HTML redirect stub and reports
 success. That failure is silent, which is what makes it dangerous.
 
+CONCURRENCY: the staging name is STABLE, because resuming a 283MB download
+requires the partial to keep the same name across process restarts. A stable
+name is shared by every invocation, so two agents would both open it, both
+append, and interleave their bytes into one corrupt file -- which the sha256
+check would catch only after the whole transfer. exclusive_lock therefore covers
+the entire check-fetch-publish sequence. Unlike extract.py, a unique staging
+name is NOT an option here: it would trade resumability for safety when the lock
+already provides safety without that cost.
+
 Bytes are written exactly as received. No parsing, no filtering: that is the
 raw layer contract, and it is what makes reprocessing meaningful.
 """
@@ -37,13 +55,19 @@ raw layer contract, and it is what makes reprocessing meaningful.
 from __future__ import annotations
 
 import hashlib
-import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from spark_batch_pipeline.atomicio import (
+    exclusive_lock,
+    publish,
+    staging_path,
+    write_atomic,
+)
 
 # 8 MiB blocks: syscall overhead is negligible on a 283 MB file, and memory
 # stays flat regardless of artifact size.
@@ -87,6 +111,22 @@ def sha256_of(path: Path) -> str:
         while chunk := handle.read(_CHUNK_BYTES):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_manifest(manifest_file: Path) -> IngestManifest | None:
+    """Load a manifest, or None if it is absent or unusable.
+
+    Unusable is deliberately equivalent to absent. A manifest that cannot be
+    parsed carries no trustworthy claim, so honouring it would mean trusting
+    unknown metadata, and raising on it would strand a pipeline that can simply
+    redo one step.
+    """
+    if not manifest_file.is_file():
+        return None
+    try:
+        return IngestManifest.model_validate_json(manifest_file.read_text())
+    except (ValidationError, ValueError, UnicodeDecodeError):
+        return None
 
 
 def _sleep_backoff(attempt: int) -> None:
@@ -133,14 +173,47 @@ def fetch_source(
     name = filename or url.rsplit("/", 1)[-1]
     artifact = dest_dir / name
     manifest_file = IngestManifest.path_for(artifact)
-    partial = artifact.with_name(artifact.name + ".part")
+    # Stable staging name: resuming across process restarts needs it. Safe only
+    # because the lock below serialises writers.
+    partial = staging_path(artifact)
 
+    with exclusive_lock(artifact):
+        return _fetch_locked(
+            source_name=source_name,
+            url=url,
+            artifact=artifact,
+            manifest_file=manifest_file,
+            partial=partial,
+            name=name,
+            client=client,
+            force=force,
+        )
+
+
+def _fetch_locked(
+    *,
+    source_name: str,
+    url: str,
+    artifact: Path,
+    manifest_file: Path,
+    partial: Path,
+    name: str,
+    client: httpx.Client | None,
+    force: bool,
+) -> IngestManifest:
+    """The critical section. Only ever called while holding the artifact lock.
+
+    Split out so the lock scope is visible in one place rather than indenting
+    the whole body: everything here -- the completeness check, the transfer, and
+    both publishes -- must be serialised. Checking outside the lock and acting
+    on the answer is the classic TOCTOU race.
+    """
     # Fast path: a prior run completed this fetch. Re-verify the digest -- a
     # manifest whose artifact was truncated is worse than none, because it
     # asserts an integrity guarantee that no longer holds.
-    if manifest_file.exists() and artifact.exists() and not force:
-        existing = IngestManifest.model_validate_json(manifest_file.read_text())
-        if sha256_of(artifact) == existing.sha256:
+    if not force and artifact.is_file():
+        existing = _read_manifest(manifest_file)
+        if existing is not None and sha256_of(artifact) == existing.sha256:
             return existing
 
     if force and partial.exists():
@@ -164,8 +237,8 @@ def fetch_source(
                     raise
                 _sleep_backoff(attempt)
             except httpx.TransportError:
-                # Connection reset or read timeout: whatever landed in .part is
-                # kept, and the next attempt resumes from that offset.
+                # Connection reset or read timeout: whatever landed in the
+                # staged file is kept, and the next attempt resumes from there.
                 if attempt == _MAX_ATTEMPTS - 1:
                     raise
                 _sleep_backoff(attempt)
@@ -173,8 +246,12 @@ def fetch_source(
         if owns_client:
             active.close()
 
-    shutil.move(str(partial), str(artifact))
+    # PHASE 1: fsync the staged bytes, atomic same-directory replace, fsync the
+    # parent so the NAME is durable too.
+    publish(partial, artifact)
 
+    # PHASE 2: the manifest is the commit point. Until it lands, the artifact
+    # above is an orphan and the next run re-fetches.
     manifest = IngestManifest(
         source_name=source_name,
         url=url,
@@ -185,5 +262,5 @@ def fetch_source(
         last_modified=headers.get("last-modified"),
         ingested_at=datetime.now(UTC),
     )
-    manifest_file.write_text(manifest.model_dump_json(indent=2))
+    write_atomic(manifest_file, manifest.model_dump_json(indent=2))
     return manifest
