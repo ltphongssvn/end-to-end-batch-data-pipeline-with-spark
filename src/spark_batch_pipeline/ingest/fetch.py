@@ -60,13 +60,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from spark_batch_pipeline.atomicio import (
     exclusive_lock,
     publish,
     staging_path,
     write_atomic,
+)
+from spark_batch_pipeline.valuetypes import (
+    ByteCount,
+    PathString,
+    RecordedUrl,
+    Sha256,
+    UtcTimestamp,
 )
 
 # 8 MiB blocks: syscall overhead is negligible on a 283 MB file, and memory
@@ -88,16 +95,37 @@ _BACKOFF_BASE_SECONDS = 1.5
 class IngestManifest(BaseModel):
     """Provenance record for one fetched artifact."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # strict, matching ExtractionRecord: an attestation must not be assembled
+    # from coerced input. Pydantic is looser from JSON by design, so ingested_at
+    # still parses from an ISO string and the manifest round trip is unaffected.
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    source_name: str
-    url: str
-    filename: str
-    size_bytes: int = Field(ge=0)
-    sha256: str = Field(min_length=64, max_length=64)
+    source_name: PathString
+    filename: PathString
+
+    # Verbatim, not HttpUrl. HttpUrl belongs in conf/pipeline.yml where the job
+    # is to REJECT bad input; here the job is to RECORD what happened, and a
+    # normalizing type could store a URL that was never requested.
+    url: RecordedUrl
+
+    size_bytes: ByteCount
+
+    # THE ROOT OF TRUST. Sha256 requires 64 lowercase HEX digits; the previous
+    # min_length/max_length pair accepted ANY 64 characters, so a manifest
+    # corrupted to the right length passed as a valid attestation. extract.py
+    # copies this value into archive_sha256, so a weak constraint here weakened
+    # the entire chain of custody.
+    sha256: Sha256
+
+    # Deliberately unconstrained: these are verbatim SERVER headers, not values
+    # this project produces. Their format is the origin's business, and imposing
+    # a shape would reject a legitimate response.
     etag: str | None = None
     last_modified: str | None = None
-    ingested_at: datetime
+
+    # Timezone-aware: a naive timestamp cannot order two manifests written on
+    # machines in different zones.
+    ingested_at: UtcTimestamp
 
     @staticmethod
     def path_for(artifact: Path) -> Path:

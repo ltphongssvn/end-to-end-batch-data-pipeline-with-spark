@@ -12,55 +12,73 @@
 # pipeline. Divergence between the two is the failure this design removes.
 
 # Quieten routine output so a real failure is the only thing that stands out.
-# lefthook 2.x expects an object here; the 1.x array form fails validation with
-# "Value is array but should be object".
+# lefthook 2.x expects an object here; the 1.x array form fails validation.
 output:
   - failure
   - execution_info
 
 pre-commit:
-  parallel: false   # priority ordering below is load-bearing; see each comment
+  # piped, not merely sequential. `parallel: false` runs jobs in order but does
+  # not stop the chain when one fails, so a rejected commit still paid for every
+  # later check. piped halts on the first failure, which is what makes the
+  # branch guard below a genuine veto rather than a late complaint.
+  piped: true
   commands:
 
-    # 1. FORMAT FIRST. Formatting rewrites files, so it must run before any
-    #    check reads them. stage_fixed re-stages the rewrite, so the commit
-    #    contains the formatted result rather than failing and making the
-    #    developer re-run `git add`.
-    format:
+    # 1. BRANCH GUARD, BEFORE ANYTHING ELSE. GitFlow says work happens on a
+    #    feature branch. The server ruleset rejects a push to develop or main,
+    #    but by then the commit exists and must be unwound; failing here keeps
+    #    recovery to a single `git switch -c`, which loses nothing.
+    #
+    #    Priority 1, NOT 0: lefthook treats zero as unset and sorts the job
+    #    last, which is how the cheap veto ended up running after four
+    #    expensive checks. Lower number runs first.
+    #
+    #    Deliberately not glob-restricted: committing YAML or Markdown to
+    #    develop is just as wrong as committing Python.
+    branch:
       priority: 1
+      run: mise run check:branch
+
+    # 2. FORMAT. Formatting rewrites files, so it must precede any check that
+    #    reads them. stage_fixed re-stages the rewrite, so the commit contains
+    #    the formatted result rather than failing and forcing a manual re-add.
+    format:
+      priority: 2
       glob: "*.py"
       run: mise run fmt
       stage_fixed: true
 
-    # 2. LINT the staged Python. Runs after formatting so it never reports an
-    #    issue the formatter was about to fix.
+    # 3. LINT the staged Python, after formatting, so it never reports an issue
+    #    the formatter was about to fix.
     lint:
-      priority: 2
+      priority: 3
       glob: "*.py"
       run: mise run lint
 
-    # 3. SECRETS. Scans the INDEX only, so cost scales with the change, not the
-    #    repo -- this is what keeps the hook fast enough that nobody disables
-    #    it. Deliberately not restricted by glob: a credential can land in YAML,
-    #    JSON, a notebook, or a shell script just as easily as in Python.
+    # 4. SECRETS. Scans the INDEX only, so cost scales with the change rather
+    #    than the repo -- which is what keeps the hook fast enough that nobody
+    #    disables it. Deliberately unrestricted by glob: a credential lands in
+    #    YAML, JSON, or a shell script as easily as in Python.
     secrets:
-      priority: 3
+      priority: 4
       run: mise run check:leaks-staged
 
-    # 4. DATA GOVERNANCE. Validates cluster and pipeline config against the
+    # 5. DATA GOVERNANCE. Validates cluster and pipeline config against the
     #    Pydantic schema: supported Spark version, autotermination present,
     #    worker ceiling, distinct lakehouse layers, no inline credentials.
-    #    These are the mistakes that bill money or destroy data, and they are
-    #    caught here rather than on the cluster.
+    #    These are the mistakes that bill money or destroy data.
     config:
-      priority: 4
+      priority: 5
       glob: "conf/*.yml"
       run: mise run check:config
 
-    # 5. TYPES. Whole-project, no file list: mypy needs the full import graph,
-    #    and a staged-file subset produces false results on cross-module changes.
+    # 6. TYPES, last because it is the slowest. Whole-project and no file list:
+    #    mypy needs the full import graph, and a staged-file subset gives false
+    #    results on cross-module changes. Runs for darwin AND linux, since
+    #    platform narrowing hides one branch from the other.
     types:
-      priority: 5
+      priority: 6
       glob: "*.py"
       run: mise run types
 
@@ -74,9 +92,9 @@ pre-push:
   parallel: true    # independent checks; no ordering constraint here
   commands:
 
-    # Depth pass: the pre-commit hook only sees the current change, so a secret
-    # committed before hooks existed would never be caught. This scans the whole
-    # history before anything leaves the machine.
+    # Depth pass: the pre-commit hook only ever sees the current change, so a
+    # secret committed before hooks existed would never be caught. This scans
+    # the whole history before anything leaves the machine.
     secrets-history:
       run: mise run check:leaks-history
 
