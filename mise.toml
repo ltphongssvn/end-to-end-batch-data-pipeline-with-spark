@@ -350,3 +350,86 @@ echo "contracts up to date and tracked"
 # bash it is guaranteed legal.
 [task_config]
 shell = "bash -c"
+
+[tasks.start]
+description = "Begin work: claim a terminal and cut a correctly named branch off origin/develop"
+# ROOT CAUSE THIS ADDRESSES: `mise run sync` ends on develop, and there was no
+# one-step way to begin the next piece of work. So the WRONG thing (edit in
+# place) was easier than the right thing (claim, cut, switch). A guard that only
+# blocks would leave that asymmetry intact; this removes it.
+#
+# Terminal numbers come from refs/terminals/ on the remote, never from
+# `git worktree list`. The census reads one machine's worktrees, so with six
+# laptops each sees a fraction of the sequence, and closing a worktree drops the
+# high-water mark and re-issues a burned number. Terminal refs are never
+# deleted, so the ceiling only rises.
+#
+# The claim uses --force-with-lease against the ref, so two laptops racing for
+# the same number cannot both win: the loser is rejected with "stale info" and
+# the loop retries above the new ceiling. A rejection is the protocol working.
+usage = '''
+arg "<slug>" help="Short kebab-case description, e.g. wdi-curated-transform"
+'''
+run = '''
+set -euo pipefail
+slug="$usage_slug"
+
+case "$slug" in
+  *[!a-z0-9-]*|"")
+    echo "slug must be lowercase kebab-case: $slug" >&2
+    exit 1 ;;
+esac
+
+git fetch origin --prune
+
+for attempt in 1 2 3 4 5; do
+  ceiling="$(git ls-remote origin 'refs/terminals/*' | grep -oE '[0-9]+$' | sort -n | tail -1 || true)"
+  next=$(( ${ceiling:-0} + 1 ))
+  ref="refs/terminals/t${next}"
+
+  git update-ref "$ref" HEAD
+  if git push origin "$ref" --force-with-lease="$ref": 2>/dev/null; then
+    echo "claimed t${next}"
+    break
+  fi
+
+  # Another machine took this number. Drop the local ref and try the next one.
+  git update-ref -d "$ref"
+  echo "t${next} already claimed elsewhere, retrying (attempt $attempt)" >&2
+  git fetch origin --prune
+  if [ "$attempt" = "5" ]; then
+    echo "could not claim a terminal after 5 attempts" >&2
+    exit 1
+  fi
+done
+
+branch="t${next}-wt1-${slug}"
+git switch -c "$branch" origin/develop
+echo
+echo "on $branch, cut from origin/develop"
+echo "next: work, then 'mise run pr'"
+'''
+
+[tasks."check:branch"]
+description = "Refuse to commit on a protected branch"
+# Fails closed, which is what an unattended agent needs: it will not notice a
+# warning, but it will notice a non-zero exit and correct course. The server
+# ruleset already rejects the PUSH, but by then the commit exists and has to be
+# unwound; catching it here keeps the recovery to a single switch.
+run = '''
+set -euo pipefail
+branch="$(git rev-parse --abbrev-ref HEAD)"
+
+case "$branch" in
+  develop|main)
+    echo "refusing to commit on '$branch'." >&2
+    echo "" >&2
+    echo "GitFlow: work happens on a feature branch cut from origin/develop." >&2
+    echo "" >&2
+    echo "nothing is lost -- carry the work across with:" >&2
+    echo "  git switch -c t<N>-wt1-<slug>" >&2
+    echo "or start cleanly next time with:" >&2
+    echo "  mise run start <slug>" >&2
+    exit 1 ;;
+esac
+'''

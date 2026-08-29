@@ -84,7 +84,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from spark_batch_pipeline.atomicio import (
     STAGING_SUFFIX,
@@ -101,6 +101,14 @@ from spark_batch_pipeline.ingest.policy import (
     enforce_while_writing,
     resolve_unique_member,
     safe_member_name,
+)
+from spark_batch_pipeline.valuetypes import (
+    ByteCount,
+    Crc32,
+    MemberName,
+    PathString,
+    Sha256,
+    UtcTimestamp,
 )
 
 _COPY_BYTES = 8 * 1024 * 1024
@@ -126,24 +134,34 @@ class ExtractionState(StrEnum):
 class ExtractionRecord(BaseModel):
     """Sidecar attesting which bytes were extracted, from which archive."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # strict: an attestation must not be built from coerced input. Lax mode
+    # accepts 1.0 for a byte count or True for a CRC, letting malformed data
+    # become apparently valid data at the one boundary where that matters.
+    # Pydantic is looser from JSON by design, so extracted_at still parses from
+    # an ISO string and the sidecar round trip is unaffected.
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    archive: str
-    member: str
-    size_bytes: NonNegativeInt
+    archive: PathString
+    member: MemberName
+    size_bytes: ByteCount
 
-    # THE ROOT OF TRUST for these bytes.
-    sha256: str = Field(min_length=64, max_length=64)
+    # THE ROOT OF TRUST for these bytes. Sha256 requires 64 lowercase HEX
+    # digits; the previous min_length/max_length pair accepted ANY 64
+    # characters, so a sidecar corrupted to the right length passed as a valid
+    # attestation.
+    sha256: Sha256
 
     # BINDS THIS RECORD TO ITS ARCHIVE, closing the chain of custody between the
     # fetch manifest and this extraction. Without it the two phases attest
     # unrelated artifacts.
-    archive_sha256: str = Field(min_length=64, max_length=64)
+    archive_sha256: Sha256
 
     # Transport-corruption check only. Cheap, native to ZIP, fails fast.
-    crc32: int = Field(ge=0, le=_CRC_MASK)
+    crc32: Crc32
 
-    extracted_at: datetime
+    # Timezone-aware: a naive timestamp cannot order two records written on
+    # machines in different zones.
+    extracted_at: UtcTimestamp
 
     @staticmethod
     def path_for(target: Path) -> Path:
@@ -156,11 +174,11 @@ class ExtractionStatus(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     state: ExtractionState
-    member: str
-    target: str
-    declared_crc32: int = Field(ge=0, le=_CRC_MASK)
-    actual_crc32: int | None = None
-    actual_sha256: str | None = None
+    member: MemberName
+    target: PathString
+    declared_crc32: Crc32
+    actual_crc32: Crc32 | None = None
+    actual_sha256: Sha256 | None = None
     record: ExtractionRecord | None = None
     detail: str
 
