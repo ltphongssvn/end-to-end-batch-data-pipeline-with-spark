@@ -433,3 +433,23 @@ case "$branch" in
     exit 1 ;;
 esac
 '''
+
+[tasks."check:ruleset"]
+description = "Verify develop and main are actually protected on the server"
+# DELIBERATELY NOT a dependency of `check`. That gate runs on every commit
+# across six laptops, and this needs network plus gh auth; coupling every commit
+# to both would block legitimate offline work for no benefit, since a local
+# commit cannot weaken a server-side ruleset.
+#
+# It runs instead as its own step in CI, on every push and pull request.
+#
+# NOT a scheduled workflow, which was the obvious design and is wrong here:
+# this repository is PUBLIC, and GitHub disables scheduled workflows after 60
+# days without repository activity -- where a successful scheduled run does not
+# itself count as activity. A security check that silently stops is worse than
+# no check, because it manufactures confidence. Tying it to CI removes the cron
+# dependency entirely.
+#
+# Exit 1 means a required rule is missing; exit 2 means the check could not run.
+# Both fail, because an unverifiable protection is not a verified one.
+run = "uv run python scripts/check_ruleset.py"

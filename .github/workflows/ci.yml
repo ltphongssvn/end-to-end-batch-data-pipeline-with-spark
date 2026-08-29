@@ -100,6 +100,24 @@ jobs:
         # excluded via the pytest marker.
         run: mise run check
 
+      - name: Verify branch protection is still enforced
+        # Separate from the gate above, deliberately. `mise run check` must stay
+        # runnable offline on six laptops; this needs network and a token. CI is
+        # where both exist.
+        #
+        # NOT a scheduled workflow: this repository is public, and GitHub
+        # disables schedules after 60 days without repository activity -- where
+        # a successful scheduled run does not itself count as activity. A
+        # security check that silently stops is worse than none. Running it on
+        # every push and PR removes the cron dependency.
+        #
+        # Reads /rules/branches, which reports EFFECTIVE protection and needs
+        # only read access. /rulesets would require repo-admin rights that a
+        # workflow GITHUB_TOKEN cannot be granted.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: mise run check:ruleset
+
       - name: Trim uv cache
         if: always()
         run: uv cache prune --ci
