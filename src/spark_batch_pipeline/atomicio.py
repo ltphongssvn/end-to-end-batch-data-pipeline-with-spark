@@ -226,13 +226,24 @@ def publish(staged: Path, target: Path, *, durable: bool = True) -> None:
     """
     if not staged.is_file():
         raise FileNotFoundError(f"nothing staged at {staged}")
-    if staged.parent != target.parent:
+    # SAME DIRECTORY BY IDENTITY, NOT BY SPELLING. os.path.samefile compares
+    # device and inode, which is the actual question: mkstemp returns an
+    # ABSOLUTE path while a caller may hold a relative target, so comparing
+    # Path objects rejects a valid publish -- "datalake/raw" != "/abs/datalake/
+    # raw" as strings while naming one directory. The tests never saw this
+    # because tmp_path is always absolute; the real pipeline, run from the repo
+    # root against relative config paths, failed on the first call.
+    #
+    # Not staged.resolve().parent either: that resolves the FILE and then takes
+    # its parent, so a symlinked staging file would report the link target's
+    # directory. samefile has no such ordering trap and needs no canonical form.
+    if not staged.parent.samefile(target.parent):
         # A cross-directory publish may cross a filesystem, where replace raises
         # instead of silently degrading. Refusing up front turns a
         # deployment-specific runtime failure into an obvious programming error.
         raise ValueError(
             f"staged file must sit beside its target for an atomic replace: "
-            f"{staged.parent} != {target.parent}"
+            f"{staged.parent} is not {target.parent}"
         )
 
     if durable:

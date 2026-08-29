@@ -5,65 +5,70 @@ WHY THIS IS NOT OPTIONAL: Spark reads gzip and bzip2 natively but NOT zip.
 WDI_CSV.zip must be expanded before any DataFrame can touch it, and the member
 is 198MB, so re-running must not repeat the work.
 
+INTEGRITY: SHA-256 IS THE ROOT OF TRUST, CRC-32 IS NOT
+CRC-32 is a 32-bit checksum designed to catch transmission noise. Collisions are
+trivial to construct, so it cannot attest that content is what the source
+published: bytes substituted after extraction can preserve the CRC exactly. It
+is kept because ZIP supplies it for free and it fails fast on a damaged file --
+a transport check, not a guarantee.
+
+The chain of custody runs: URL -> archive SHA-256 (fetch manifest) -> member
+SHA-256 + CRC (this record), with archive_sha256 copied forward so the member is
+provably tied to the archive it came from. Without that link the two phases
+attest unrelated things and "reprocess from raw" cannot be traced.
+
+Upstream signing would be the next tier, and it does not exist: the World Bank
+publishes no signatures for WDI, so there is no provenance to verify against.
+Trust is therefore anchored to the first observed digest, recorded in the
+manifest, and any later change is detectable even though its legitimacy cannot
+be judged from the artifact alone.
+
 WHY A STATE MACHINE RATHER THAN NESTED CONDITIONS
-The states below always existed -- ABSENT, STAGED, ORPHANED, STALE, CORRUPT,
-COMMITTED -- but were encoded implicitly in file existence and one compound
-boolean. Implicit states cannot be inspected without performing the work, cannot
-be asserted individually, and cannot be reported to a supervising process
-deciding what to do next. inspect_extraction() resolves the state WITHOUT
-extracting anything, so the decision and the action are separable.
+The states below always existed but were encoded implicitly in file existence
+and one compound boolean. Implicit states cannot be inspected without performing
+the work, asserted individually, or reported to a supervising process.
+inspect_extraction() resolves the state WITHOUT extracting anything.
 
     ABSENT     no data file. Nothing has happened yet.
     STAGED     staging files survive from a run that died mid-write. Garbage to
-               be cleaned, not a partial to resume: a zip member cannot be
-               inflated from an arbitrary offset.
+               clean, not a partial to resume: a zip member cannot be inflated
+               from an arbitrary offset.
     ORPHANED   data present, sidecar missing or unparseable. The phase-1 crash
-               window: complete bytes that nothing references. This is the SAFE
-               direction of failure and is simply redone.
+               window: complete bytes that nothing references. The SAFE
+               direction of failure, simply redone.
     STALE      sidecar readable but its CRC disagrees with what the archive now
                declares. The source changed under us.
-    CORRUPT    sidecar agrees with the archive, but the file on disk does not
-               match either. Bit rot or an edit in place.
-    COMMITTED  archive, sidecar, and file all agree. The only state that skips
-               work.
+    CORRUPT    the file on disk does not match what both the archive and the
+               sidecar say it should be.
+    COMMITTED  archive, sidecar, and file agree on CRC and SHA-256. The only
+               state that skips work.
 
 CONCURRENCY: idempotent-under-sequential-execution and safe-under-concurrency
-are different properties, and this module needs both. Two agents extracting the
-same member would previously open the same fixed "<name>.part", truncate it,
-and race on the rename. The whole check-and-commit sequence therefore runs under
-exclusive_lock: without the lock, both would observe the same state, both would
-do the work, and both would publish. The staging name is also unique per run, so
-a dead run's leftovers can never be mistaken for the current one.
+are different properties. Two agents extracting the same member would otherwise
+open one fixed staging name, truncate it, and race on the rename. The whole
+check-and-commit sequence runs under exclusive_lock, and the staging name is
+unique per run so a dead run's leftovers cannot be mistaken for the current one.
 
-The state is resolved TWICE on purpose -- once outside the lock for a cheap
-answer, once inside before acting. The first is advisory and can be stale by the
+The state is resolved TWICE on purpose: once outside the lock for a cheap
+answer, once inside before acting. The first is advisory and may be stale by the
 time it returns; only the second is a decision.
 
 COMMIT PROTOCOL, both phases symmetrical:
-    stage data     -> verify CRC -> publish data     (atomic + durable)
-    render sidecar ->              publish sidecar   (atomic + durable)
+    stage data     -> verify -> publish data     (atomic + durable)
+    render sidecar ->           publish sidecar  (atomic + durable)
 Data is published first, so a crash between phases yields ORPHANED, never a
-sidecar describing data that was never written. That is the Iceberg ordering:
-orphan files are recoverable, dangling pointers are not.
+sidecar describing data that was never written. Orphans are recoverable;
+dangling pointers are not.
 
-WHY A STALE SIDECAR CANNOT BE TRUSTED AFTER AN OVERWRITE: the sidecar's claim is
-checked against BOTH the archive's declared CRC and the file's actual CRC, so it
-cannot certify content it does not describe.
-
-IDEMPOTENCE, and why size is not enough: length comparison accepts a file edited
-in place without a length change. Zip stores a CRC per member, so verification
-costs one pass over local disk and no re-inflation.
+ZERO-TRUST DECOMPRESSION: an archive fetched over the network is untrusted
+input, so inflation is policy-controlled (policy.py). `info.file_size` is a
+field IN the archive and therefore attacker-controlled: checking it is a cheap
+early reject, never the guarantee. The binding limit is a byte counter that
+aborts mid-write.
 
 CRC comes from binascii, not zipfile. zipfile.crc32 exists at runtime only as a
 private re-export of binascii.crc32; depending on it is depending on an
-implementation detail, which is what mypy flags. Same function, public name.
-
-ZERO-TRUST DECOMPRESSION: an archive fetched over the network is untrusted
-input, so inflation is policy-controlled (see policy.py). The critical point is
-that `info.file_size` is a field IN the archive and therefore attacker
-controlled -- checking it is a cheap early reject, never the guarantee. The
-binding limit is a byte counter that aborts mid-write, so an archive that lies
-in its header is stopped before it fills the volume rather than after.
+implementation detail, which is what mypy flags.
 
 STAYS RAW: bytes are written exactly as stored. No parsing, re-encoding, or
 newline translation. The raw layer is only replayable if what lands is what the
@@ -73,6 +78,7 @@ source shipped.
 from __future__ import annotations
 
 import binascii
+import hashlib
 import zipfile
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -87,6 +93,7 @@ from spark_batch_pipeline.atomicio import (
     publish,
     write_atomic,
 )
+from spark_batch_pipeline.ingest.fetch import IngestManifest
 from spark_batch_pipeline.ingest.policy import (
     ExtractionPolicy,
     check_archive,
@@ -117,14 +124,25 @@ class ExtractionState(StrEnum):
 
 
 class ExtractionRecord(BaseModel):
-    """Sidecar proving which member produced a given raw file."""
+    """Sidecar attesting which bytes were extracted, from which archive."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     archive: str
     member: str
     size_bytes: NonNegativeInt
+
+    # THE ROOT OF TRUST for these bytes.
+    sha256: str = Field(min_length=64, max_length=64)
+
+    # BINDS THIS RECORD TO ITS ARCHIVE, closing the chain of custody between the
+    # fetch manifest and this extraction. Without it the two phases attest
+    # unrelated artifacts.
+    archive_sha256: str = Field(min_length=64, max_length=64)
+
+    # Transport-corruption check only. Cheap, native to ZIP, fails fast.
     crc32: int = Field(ge=0, le=_CRC_MASK)
+
     extracted_at: datetime
 
     @staticmethod
@@ -142,6 +160,7 @@ class ExtractionStatus(BaseModel):
     target: str
     declared_crc32: int = Field(ge=0, le=_CRC_MASK)
     actual_crc32: int | None = None
+    actual_sha256: str | None = None
     record: ExtractionRecord | None = None
     detail: str
 
@@ -150,34 +169,67 @@ class ExtractionStatus(BaseModel):
         return self.state.needs_work
 
 
+def digests_of(path: Path) -> tuple[int, str]:
+    """Return (crc32, sha256) for a file in a SINGLE pass.
+
+    NOT hashlib.file_digest, despite it being the modern one-liner: it computes
+    one digest and consumes the file, so getting both would mean reading 198MB
+    twice to checksum the same bytes.
+
+    readinto with a reused buffer rather than read(), which would allocate a
+    fresh 8MiB object per chunk for no benefit.
+    """
+    crc = 0
+    sha = hashlib.sha256()
+    buffer = bytearray(_COPY_BYTES)
+    view = memoryview(buffer)
+    with path.open("rb", buffering=0) as handle:
+        while (count := handle.readinto(buffer)) > 0:
+            chunk = view[:count]
+            crc = binascii.crc32(chunk, crc)
+            sha.update(chunk)
+    return crc & _CRC_MASK, sha.hexdigest()
+
+
+def crc32_of(path: Path) -> int:
+    """CRC-32 only, for callers that need just the cheap transport check."""
+    return digests_of(path)[0]
+
+
+def _archive_digest(archive: Path) -> str:
+    """SHA-256 of the archive, reused from the fetch manifest when available.
+
+    The manifest already attests this digest, so recomputing it over 283MB on
+    every extraction is pure waste. Computing it as a fallback keeps the
+    function correct for an archive that arrived by some other route.
+    """
+    manifest_file = IngestManifest.path_for(archive)
+    if manifest_file.is_file():
+        try:
+            return IngestManifest.model_validate_json(manifest_file.read_text()).sha256
+        except (ValidationError, ValueError, UnicodeDecodeError):
+            pass
+    return digests_of(archive)[1]
+
+
 def _member_info(archive: Path, member: str) -> zipfile.ZipInfo:
     """Resolve a member to exactly one entry.
 
     Deliberately NOT bundle.getinfo(member): with duplicate filenames CPython's
     name index keeps only the last entry, so getinfo silently picks one of
-    several and the CRC we record would attest bytes another reader might not
+    several and the digest we record would attest bytes another reader might not
     get. resolve_unique_member refuses instead.
     """
     with zipfile.ZipFile(archive) as bundle:
         return resolve_unique_member(bundle, member)
 
 
-def crc32_of(path: Path) -> int:
-    """CRC-32 of a file, computed the way zip computes it."""
-    crc = 0
-    with path.open("rb") as handle:
-        while chunk := handle.read(_COPY_BYTES):
-            crc = binascii.crc32(chunk, crc)
-    return crc & _CRC_MASK
-
-
 def _leftover_staging(target: Path) -> list[Path]:
     """Staging files beside `target` from runs that did not finish.
 
-    Matches BOTH conventions: the unique per-run name this module writes now
-    ("<name>.<random>.part") and the fixed name it used before staging became
-    unique ("<name>.part"). A pipeline upgraded in place will still be holding
-    leftovers in the old form, and garbage that the sweep cannot see is garbage
+    Matches BOTH conventions: the unique per-run name written now, and the fixed
+    name used before staging became unique. A pipeline upgraded in place still
+    holds leftovers in the old form, and garbage the sweep cannot see is garbage
     that never gets collected.
     """
     unique = target.parent.glob(f"{target.name}.*{STAGING_SUFFIX}")
@@ -211,6 +263,7 @@ def _status(
     declared_crc32: int,
     detail: str,
     actual_crc32: int | None = None,
+    actual_sha256: str | None = None,
     record: ExtractionRecord | None = None,
 ) -> ExtractionStatus:
     """Build a status with the shared fields explicit and typed.
@@ -225,6 +278,7 @@ def _status(
         target=str(target),
         declared_crc32=declared_crc32,
         actual_crc32=actual_crc32,
+        actual_sha256=actual_sha256,
         record=record,
         detail=detail,
     )
@@ -234,8 +288,8 @@ def inspect_extraction(archive: Path, member: str, dest_dir: Path) -> Extraction
     """Resolve the state of `member` in `dest_dir` without extracting.
 
     Takes no lock: this is a cheap read, and a caller that only reports state
-    should not block a writer. A caller that intends to ACT on the answer must
-    re-resolve under the lock, which extract_member does.
+    should not block a writer. A caller intending to ACT must re-resolve under
+    the lock, which extract_member does.
     """
     target = dest_dir / Path(member).name
     declared = _member_info(archive, member).CRC & _CRC_MASK
@@ -280,17 +334,44 @@ def inspect_extraction(archive: Path, member: str, dest_dir: Path) -> Extraction
             ),
         )
 
-    actual = crc32_of(target)
-    if actual != declared:
+    # One read, both checksums. CRC is evaluated first so a damaged file is
+    # reported as transport corruption rather than as a digest mismatch, which
+    # would wrongly suggest substitution.
+    actual_crc, actual_sha = digests_of(target)
+    if actual_crc != declared:
         return _status(
             state=ExtractionState.CORRUPT,
             member=member,
             target=target,
             declared_crc32=declared,
-            actual_crc32=actual,
+            actual_crc32=actual_crc,
+            actual_sha256=actual_sha,
             record=record,
             detail=(
-                f"file on disk is {actual:#010x} but both archive and sidecar say {declared:#010x}"
+                f"file on disk is {actual_crc:#010x} but both archive and "
+                f"sidecar say {declared:#010x}"
+            ),
+        )
+
+    # THE INTEGRITY CHECK. A CRC match proves only that 32 bits agree, and CRC
+    # collisions are trivial to construct, so content substituted after
+    # extraction can preserve it. Only the digest detects that.
+    #
+    # Plain == rather than compare_digest: these are integrity values, not
+    # secrets. compare_digest defends a value the attacker must not learn; here
+    # the attacker already holds the file.
+    if actual_sha != record.sha256:
+        return _status(
+            state=ExtractionState.CORRUPT,
+            member=member,
+            target=target,
+            declared_crc32=declared,
+            actual_crc32=actual_crc,
+            actual_sha256=actual_sha,
+            record=record,
+            detail=(
+                "CRC matches but SHA-256 does not: sidecar records "
+                f"{record.sha256[:16]}..., file is {actual_sha[:16]}..."
             ),
         )
 
@@ -299,9 +380,10 @@ def inspect_extraction(archive: Path, member: str, dest_dir: Path) -> Extraction
         member=member,
         target=target,
         declared_crc32=declared,
-        actual_crc32=actual,
+        actual_crc32=actual_crc,
+        actual_sha256=actual_sha,
         record=record,
-        detail="archive, sidecar, and file all agree",
+        detail="archive, sidecar, and file agree on both CRC and SHA-256",
     )
 
 
@@ -317,8 +399,7 @@ def extract_member(
 
     Everything from the state check to the sidecar publish runs under an
     exclusive lock. Checking outside the lock and acting on the answer is the
-    classic TOCTOU race: two agents both see ABSENT, both extract, and both
-    publish.
+    classic TOCTOU race: two agents both see ABSENT, both extract, both publish.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     active_policy = policy or ExtractionPolicy()
@@ -331,8 +412,7 @@ def extract_member(
 
     with exclusive_lock(target):
         # Re-resolve INSIDE the lock. Any status read before acquiring it was
-        # advisory and may already be out of date -- another agent may have
-        # completed the whole extraction while we waited.
+        # advisory and may already be out of date.
         status = inspect_extraction(archive, member, dest_dir)
         if not force and status.state is ExtractionState.COMMITTED:
             if status.record is None:  # pragma: no cover - COMMITTED implies a record
@@ -346,14 +426,11 @@ def extract_member(
         for stale in _leftover_staging(target):
             stale.unlink(missing_ok=True)
 
-        # Unique staging name: mkstemp relies on O_EXCL, so no two runs can
-        # receive the same path even if the lock were somehow bypassed.
+        # Unique staging name: mkstemp relies on O_EXCL, so no two runs receive
+        # the same path even if the lock were somehow bypassed.
         staged = new_staging_path(target)
         try:
-            # PHASE 1: inflate, then verify BEFORE publishing. A corrupt member
-            # must never appear under the real name, because everything
-            # downstream treats the raw layer as truth.
-            # Archive-level limits first: member count and declared total.
+            # Archive-level limits first: member count, declared total, overlap.
             check_archive(archive, active_policy)
 
             with zipfile.ZipFile(archive) as bundle:
@@ -363,24 +440,34 @@ def extract_member(
                 check_member(info, dest_dir, active_policy)
 
                 # open(info), NOT open(member). Passing the resolved ZipInfo is
-                # what makes the entry we inspected provably the entry we read;
-                # a name would be re-resolved and could bind elsewhere.
+                # what makes the entry inspected provably the entry read.
                 with bundle.open(info) as source, staged.open("wb") as sink:
                     # NOT copyfileobj. The loop exists so every chunk can be
                     # counted and the write aborted the instant a real limit is
-                    # crossed. copyfileobj would happily stream a bomb to
-                    # completion because it cannot see the policy.
+                    # crossed; copyfileobj cannot see the policy.
                     written = 0
+                    crc = 0
+                    sha = hashlib.sha256()
                     while chunk := source.read(_COPY_BYTES):
                         written += len(chunk)
                         enforce_while_writing(written, info.compress_size, info, active_policy)
+                        # Digest AS the bytes are written. Re-reading the
+                        # published file afterwards would double the I/O and,
+                        # worse, attest whatever is on disk THEN rather than
+                        # what was actually extracted from this archive.
+                        crc = binascii.crc32(chunk, crc)
+                        sha.update(chunk)
                         sink.write(chunk)
+                    crc &= _CRC_MASK
+                    member_sha = sha.hexdigest()
 
-            actual = crc32_of(staged)
-            if actual != declared:
+            # Verify BEFORE publishing. A corrupt member must never appear under
+            # the real name, because everything downstream treats the raw layer
+            # as truth.
+            if crc != declared:
                 raise ValueError(
                     f"CRC mismatch extracting {member!r}: archive declares "
-                    f"{declared:#010x}, extracted data is {actual:#010x}"
+                    f"{declared:#010x}, extracted data is {crc:#010x}"
                 )
 
             publish(staged, target)
@@ -395,6 +482,8 @@ def extract_member(
             archive=str(archive),
             member=member,
             size_bytes=target.stat().st_size,
+            sha256=member_sha,
+            archive_sha256=_archive_digest(archive),
             crc32=declared,
             extracted_at=datetime.now(UTC),
         )
