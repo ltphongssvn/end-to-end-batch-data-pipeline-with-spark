@@ -92,6 +92,7 @@ from spark_batch_pipeline.ingest.policy import (
     check_archive,
     check_member,
     enforce_while_writing,
+    resolve_unique_member,
     safe_member_name,
 )
 
@@ -150,8 +151,15 @@ class ExtractionStatus(BaseModel):
 
 
 def _member_info(archive: Path, member: str) -> zipfile.ZipInfo:
+    """Resolve a member to exactly one entry.
+
+    Deliberately NOT bundle.getinfo(member): with duplicate filenames CPython's
+    name index keeps only the last entry, so getinfo silently picks one of
+    several and the CRC we record would attest bytes another reader might not
+    get. resolve_unique_member refuses instead.
+    """
     with zipfile.ZipFile(archive) as bundle:
-        return bundle.getinfo(member)
+        return resolve_unique_member(bundle, member)
 
 
 def crc32_of(path: Path) -> int:
@@ -349,11 +357,15 @@ def extract_member(
             check_archive(archive, active_policy)
 
             with zipfile.ZipFile(archive) as bundle:
-                info = bundle.getinfo(member)
+                # Exactly one entry, or refuse. See _member_info.
+                info = resolve_unique_member(bundle, member)
                 # Declared metadata: advisory, and cheap enough to be worth it.
                 check_member(info, dest_dir, active_policy)
 
-                with bundle.open(member) as source, staged.open("wb") as sink:
+                # open(info), NOT open(member). Passing the resolved ZipInfo is
+                # what makes the entry we inspected provably the entry we read;
+                # a name would be re-resolved and could bind elsewhere.
+                with bundle.open(info) as source, staged.open("wb") as sink:
                     # NOT copyfileobj. The loop exists so every chunk can be
                     # counted and the write aborted the instant a real limit is
                     # crossed. copyfileobj would happily stream a bomb to

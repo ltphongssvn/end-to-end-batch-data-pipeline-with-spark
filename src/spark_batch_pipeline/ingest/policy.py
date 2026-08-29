@@ -143,6 +143,42 @@ def safe_member_name(member: str) -> str:
     return candidate.name
 
 
+def resolve_unique_member(bundle: zipfile.ZipFile, member: str) -> zipfile.ZipInfo:
+    """Resolve `member` to EXACTLY ONE entry, or refuse.
+
+    ZIP permits duplicate filenames, and such archives exist in the wild.
+    CPython keeps only the LAST entry for a given name in its internal name
+    index, so a name-based lookup silently binds to whichever duplicate came
+    last -- and can even fail outright with "Overlapped entries: possible zip
+    bomb" while opening the same file by its ZipInfo succeeds
+    (python/cpython#117779).
+
+    That destroys provenance. The sidecar attests a CRC for "the member called
+    X", but with duplicates there is no such thing as "the" member: another
+    tool reading the same archive may legitimately resolve X to different
+    bytes. A checksum that identifies the wrong entry is worse than none,
+    because it asserts a guarantee it does not hold.
+
+    Callers must pass the returned ZipInfo to open(), never the name, so the
+    entry that was inspected is provably the entry that gets read.
+    """
+    matches = [info for info in bundle.infolist() if info.filename == member]
+
+    if not matches:
+        # KeyError preserves zipfile's own contract for an unknown member, so
+        # callers distinguishing "absent" from "refused" keep working.
+        raise KeyError(member)
+
+    if len(matches) > 1:
+        _reject(
+            f"archive contains {len(matches)} entries named {member!r}; "
+            "provenance is ambiguous because a name cannot identify which "
+            "bytes were verified"
+        )
+
+    return matches[0]
+
+
 def check_archive(archive: Path, policy: ExtractionPolicy) -> None:
     """Validate archive-level limits before opening any member."""
     with zipfile.ZipFile(archive) as bundle:
