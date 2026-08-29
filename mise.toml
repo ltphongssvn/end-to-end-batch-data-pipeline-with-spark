@@ -51,8 +51,29 @@ description = "Lint (same invocation CI uses)"
 run = "uv run ruff check ."
 
 [tasks.types]
-description = "Static type check"
-run = "uv run mypy src tests"
+description = "Static type check, for every platform this code runs on"
+# BOTH PLATFORMS, DELIBERATELY. mypy defaults to the OS it happens to be running
+# on, and it NARROWS sys.platform comparisons -- so a Darwin-only branch is
+# invisible to a Linux run and vice versa. Checking one platform leaves the other
+# branch unverified everywhere. This fleet is macOS laptops plus a Linux CI
+# runner, so either gap is a branch nobody checks.
+#
+# Not hypothetical: fcntl.F_FULLFSYNC exists only on Darwin. The gate passed on
+# every laptop and failed in CI, because a module-level
+#   _IS_DARWIN = sys.platform == "darwin"
+# defeated the narrowing -- mypy narrows only on inline comparisons inside
+# if/elif/else. Inlining fixed the false error; running both platforms is what
+# stops the reverse, a Linux-only branch breaking with nobody noticing until a
+# laptop runs it.
+#
+# mypy has no native multi-platform mode (python/mypy#12286); invoking it once
+# per target is the documented approach. It is also far cheaper than a CI OS
+# matrix, which would only be needed for RUNTIME differences, not type checking.
+run = '''
+set -euo pipefail
+uv run mypy --platform darwin src tests
+uv run mypy --platform linux src tests
+'''
 
 [tasks.test]
 description = "Unit tests, excluding Databricks integration tests"

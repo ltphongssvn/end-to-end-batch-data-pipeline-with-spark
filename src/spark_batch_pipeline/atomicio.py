@@ -78,8 +78,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-_IS_DARWIN = sys.platform == "darwin"
-
 # Staging suffix shared by data and metadata, so a crashed run leaves an
 # obviously-incomplete name in both cases.
 STAGING_SUFFIX = ".part"
@@ -93,8 +91,19 @@ _LOCK_POLL_SECONDS = 0.25
 
 
 def _full_fsync(fd: int) -> None:
-    """Flush a file descriptor as far down the stack as the platform allows."""
-    if _IS_DARWIN:
+    """Flush a file descriptor as far down the stack as the platform allows.
+
+    The platform test is written INLINE as `sys.platform == "darwin"`, not via a
+    module-level boolean. mypy narrows on sys.platform comparisons only inside
+    if/elif/else statements, so an intermediate constant defeats it: the checker
+    then analyses the Darwin branch on Linux and reports F_FULLFSYNC missing,
+    which is a real CI failure that cannot reproduce on a Mac.
+
+    Because narrowing works, mypy on Linux skips this branch entirely -- so the
+    branch would never be checked anywhere if CI only ran one platform. The
+    `types` task therefore runs mypy for BOTH darwin and linux; see mise.toml.
+    """
+    if sys.platform == "darwin":
         import fcntl
 
         # F_FULLFSYNC asks the drive to flush its internal cache, which plain
