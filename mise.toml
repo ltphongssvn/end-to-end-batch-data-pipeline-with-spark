@@ -25,6 +25,8 @@ betterleaks = "1.8.1"
 # Bare "java@17" silently resolves to a different build than Databricks ships.
 java = "temurin-17"
 lefthook = "2.1.10"
+opa = "1.19.1"
+regal = "0.42.0"
 
 # uv owns the Python interpreter and dependency graph; mise pins uv itself so the
 # resolver version is reproducible too. Python version lives in .python-version.
@@ -92,7 +94,19 @@ description = "The quality gate. CI runs exactly this task; nothing is restated 
 # with `git commit --no-verify`, has never been scanned. CI is the layer where
 # a bypass is caught, which is the whole reason CI must not merely mirror the
 # hooks -- it must be strictly broader.
-depends = ["lint", "types", "test", "check:config", "check:contracts", "check:leaks-history"]
+depends = [
+  "lint",
+  "types",
+  "test",
+  "check:config",
+  "check:contracts",
+  # The policy is a first-class artifact and rots exactly like code if it
+  # is not checked on every change. Its own toolchain runs here: opa fmt,
+  # opa check --strict, regal, and 28 Rego tests at 100% coverage.
+  "check:policy",
+  "check:policy-coverage",
+  "check:leaks-history",
+]
 run = "uv run ruff format --check ."
 
 [tasks.pr]
@@ -453,3 +467,63 @@ description = "Verify develop and main are actually protected on the server"
 # Exit 1 means a required rule is missing; exit 2 means the check could not run.
 # Both fail, because an unverifiable protection is not a verified one.
 run = "uv run python scripts/check_ruleset.py"
+
+[tasks."check:policy"]
+description = "Format, lint, type-check and unit-test the Rego policies"
+# The policy is an artifact with its own toolchain and gets the same treatment
+# as the Python: formatter, linter, type checker, tests. Untested policy is
+# policy nobody should trust, and untested branches are where fail-open bugs
+# hide -- this file shipped with exactly one, where a missing input field left
+# every deny rule undefined and the decision ALLOW.
+#
+# --fail-on-empty is not optional: opa test SUCCEEDS when zero tests run, so a
+# renamed package or a mistyped path would report green while testing nothing.
+# The same silent-pass failure this project removes everywhere else.
+#
+# opa fmt --fail makes formatting a gate rather than a suggestion.
+# opa check --strict rejects unused imports and unsafe references.
+# regal is the Rego linter; it caught two real issues here, including deny
+# clauses split across the file where a reader could miss one.
+run = '''
+set -euo pipefail
+opa fmt --fail --diff policies/
+opa check --strict policies/
+regal lint policies/
+opa test policies/ --fail-on-empty
+'''
+
+[tasks."check:policy-coverage"]
+description = "Fail if any Rego policy line is untested"
+# 100% HERE, AND DELIBERATELY NOT AS A PROJECT-WIDE TARGET.
+#
+# As a general goal, 100% coverage invites gaming: people write the cheapest
+# tests that touch a line without asserting behaviour, and the number stops
+# meaning anything. Coverage is a useful floor and a terrible ceiling, and
+# mutation testing -- which this project uses on the Python -- is the signal
+# that cannot be faked.
+#
+# The bar is different for this artifact, for reasons the safety standards
+# state directly: DO-178B REQUIRES 100% for safety-critical code, and IEC 61508
+# ties the strenuousness of the recommendation to criticality, adding that any
+# uncovered line should be explained. This file is ~110 lines of pure decision
+# logic with no plumbing to pad, every line is a security rule, and an
+# uncovered deny rule is one nobody has watched fire -- indistinguishable from
+# one that cannot. There is nothing here to game: each rule needs a firing case
+# and a non-firing case, which is behaviour verification either way.
+run = '''
+set -euo pipefail
+mkdir -p .scratch
+opa test policies/ --coverage --format=json > .scratch/policy-coverage.json
+uv run python -c "
+import json, pathlib, sys
+report = json.loads(pathlib.Path('.scratch/policy-coverage.json').read_text())
+overall = report['coverage']
+print(f'policy coverage: {overall:.1f}%')
+if overall < 100.0:
+    for path, info in report.get('files', {}).items():
+        for block in info.get('not_covered', []):
+            start, end = block['start']['row'], block['end']['row']
+            print(f'  UNCOVERED {path}:{start}-{end}', file=sys.stderr)
+    sys.exit(1)
+"
+'''

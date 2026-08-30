@@ -28,11 +28,12 @@ from pathlib import Path
 
 import pytest
 
-from spark_batch_pipeline.ingest.extract import extract_member, inspect_extraction
-from spark_batch_pipeline.ingest.policy import (
-    PolicyViolationError,
+from spark_batch_pipeline.ingest.extract import (
+    extract_member,
+    inspect_extraction,
     resolve_unique_member,
 )
+from spark_batch_pipeline.ingest.policy import PolicyViolationError
 
 MEMBER = "WDICSV.csv"
 FIRST = b"FIRST entry payload\n" * 10

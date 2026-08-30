@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import binascii
 import hashlib
+import shutil
 import zipfile
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -96,12 +97,11 @@ from spark_batch_pipeline.atomicio import (
 )
 from spark_batch_pipeline.ingest.fetch import IngestManifest
 from spark_batch_pipeline.ingest.policy import (
-    ExtractionPolicy,
-    check_archive,
-    check_member,
+    ExtractionDecision,
+    PolicyViolationError,
+    build_input,
     enforce_while_writing,
-    resolve_unique_member,
-    safe_member_name,
+    evaluate,
 )
 from spark_batch_pipeline.runcontext import current_run
 from spark_batch_pipeline.valuetypes import (
@@ -206,6 +206,15 @@ class ExtractionRecord(BaseModel):
     # Transport-corruption check only. Cheap, native to ZIP, fails fast.
     crc32: Crc32
 
+    # WHY THIS EXTRACTION WAS PERMITTED, not merely that it happened. Records
+    # the policy version that decided and the limits that applied, so an audit
+    # reading this sidecar alone can answer "under which rules?" without
+    # guessing which revision of the policy was deployed at the time.
+    #
+    # Nullable: records written before the policy engine existed have no
+    # decision to report, and inventing one would fabricate evidence.
+    decision: ExtractionDecision | None = None
+
     # Timezone-aware: a naive timestamp cannot order two records written on
     # machines in different zones.
     extracted_at: UtcTimestamp
@@ -232,6 +241,60 @@ class ExtractionStatus(BaseModel):
     @property
     def needs_work(self) -> bool:
         return self.state.needs_work
+
+
+def safe_member_name(member: str) -> str:
+    """Return the basename of `member`, or refuse if the name tries to escape.
+
+    LIVES HERE, NOT IN THE POLICY, on purpose. Rego decides WHETHER a name is
+    acceptable and its rules are the authority; this function has to actually
+    produce a filesystem path, and it runs before any archive is opened so a
+    hostile name is never used to build one. The two are not duplicates: one
+    judges, the other constructs.
+
+    Refusing rather than silently trimming: trimming neutralizes the traversal
+    but lets two distinct members collapse onto one output name, so the archive
+    still decides which write wins.
+    """
+    if not member or member.endswith("/"):
+        raise PolicyViolationError(f"member name is empty or a directory entry: {member!r}")
+    candidate = Path(member)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise PolicyViolationError(f"member name escapes the destination directory: {member!r}")
+    return candidate.name
+
+
+def resolve_unique_member(bundle: zipfile.ZipFile, member: str) -> zipfile.ZipInfo:
+    """Resolve `member` to EXACTLY ONE entry, or refuse.
+
+    ZIP permits duplicate filenames, and such archives exist in the wild.
+    CPython keeps only the LAST entry for a given name in its internal name
+    index, so a name-based lookup silently binds to whichever duplicate came
+    last -- and can even fail with "Overlapped entries: possible zip bomb" while
+    opening the same file by its ZipInfo succeeds (python/cpython#117779).
+
+    That destroys provenance. The sidecar attests a digest for "the member
+    called X", but with duplicates there is no "the" member: another tool may
+    legitimately resolve X to different bytes. A checksum identifying the wrong
+    entry is worse than none, because it asserts a guarantee it does not hold.
+
+    Zip mechanics rather than policy, which is why it is here: the policy is
+    asked about ONE member, and this is what decides which one that is.
+    """
+    matches = [info for info in bundle.infolist() if info.filename == member]
+
+    if not matches:
+        # KeyError preserves zipfile's own contract for an unknown member.
+        raise KeyError(member)
+
+    if len(matches) > 1:
+        raise PolicyViolationError(
+            f"archive contains {len(matches)} entries named {member!r}; "
+            "provenance is ambiguous because a name cannot identify which "
+            "bytes were verified"
+        )
+
+    return matches[0]
 
 
 def digests_of(path: Path) -> tuple[int, str]:
@@ -466,7 +529,7 @@ def extract_member(
     dest_dir: Path,
     *,
     force: bool = False,
-    policy: ExtractionPolicy | None = None,
+    limits_override: dict[str, object] | None = None,
 ) -> ExtractionRecord:
     """Drive `member` to COMMITTED, doing nothing if it is already there.
 
@@ -475,7 +538,6 @@ def extract_member(
     classic TOCTOU race: two agents both see ABSENT, both extract, both publish.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    active_policy = policy or ExtractionPolicy()
 
     # Refuse a hostile NAME before it is ever used to build a path. Rejecting
     # rather than silently taking the basename keeps two members from
@@ -503,14 +565,31 @@ def extract_member(
         # the same path even if the lock were somehow bypassed.
         staged = new_staging_path(target)
         try:
-            # Archive-level limits first: member count, declared total, overlap.
-            check_archive(archive, active_policy)
-
             with zipfile.ZipFile(archive) as bundle:
                 # Exactly one entry, or refuse. See _member_info.
                 info = resolve_unique_member(bundle, member)
-                # Declared metadata: advisory, and cheap enough to be worth it.
-                check_member(info, dest_dir, active_policy)
+                infos = bundle.infolist()
+
+                # ONE POLICY QUERY PER MEMBER. The decision carries the limits,
+                # which are then enforced per chunk below -- asking OPA 25 times
+                # per member would spend seconds re-deriving constants that
+                # never changed. OPA decides; this module enforces.
+                decision = evaluate(
+                    build_input(
+                        member_name=info.filename,
+                        file_size=info.file_size,
+                        compress_size=info.compress_size,
+                        compress_type=info.compress_type,
+                        member_count=len(infos),
+                        declared_total_bytes=sum(i.file_size for i in infos),
+                        claimed_compressed_bytes=sum(i.compress_size for i in infos),
+                        archive_file_bytes=archive.stat().st_size,
+                        free_bytes=shutil.disk_usage(dest_dir).free,
+                        limits_override=limits_override,
+                    )
+                )
+                decision.raise_if_denied(member)
+                limits = decision.limits
 
                 # open(info), NOT open(member). Passing the resolved ZipInfo is
                 # what makes the entry inspected provably the entry read.
@@ -523,7 +602,7 @@ def extract_member(
                     sha = hashlib.sha256()
                     while chunk := source.read(_COPY_BYTES):
                         written += len(chunk)
-                        enforce_while_writing(written, info.compress_size, info, active_policy)
+                        enforce_while_writing(written, info.compress_size, info.filename, limits)
                         # Digest AS the bytes are written. Re-reading the
                         # published file afterwards would double the I/O and,
                         # worse, attest whatever is on disk THEN rather than
@@ -560,6 +639,7 @@ def extract_member(
             sha256=member_sha,
             archive_sha256=_archive_digest(archive),
             crc32=declared,
+            decision=decision,
             extracted_at=datetime.now(UTC),
         )
         write_atomic(record_file, record.model_dump_json(indent=2))
