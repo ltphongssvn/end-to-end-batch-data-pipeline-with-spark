@@ -103,6 +103,7 @@ from spark_batch_pipeline.ingest.policy import (
     resolve_unique_member,
     safe_member_name,
 )
+from spark_batch_pipeline.runcontext import current_run
 from spark_batch_pipeline.valuetypes import (
     ByteCount,
     Crc32,
@@ -169,6 +170,23 @@ class ExtractionRecord(BaseModel):
 
     # First field so it is the first key a human sees in the JSON.
     schema_version: ExtractRecordVersion = EXTRACT_RECORD_VERSION
+
+    # OBSERVABILITY, NOT INTEGRITY. These answer "which orchestrated run
+    # produced this, and by whom" -- the question the digest chain cannot. The
+    # causation edge already exists as a content digest rather than an opaque
+    # id, which is stronger: it proves the link instead of asserting it.
+    #
+    # NULLABLE RATHER THAN DEFAULTED, deliberately. Forcing a value on a field
+    # that may genuinely be unknown is the documented anti-pattern: the writer
+    # is obliged to produce something, so it fabricates. A record written
+    # before these fields existed has UNKNOWN provenance, and null says exactly
+    # that. Omitted and null mean the same thing here -- not recorded -- so no
+    # three-state distinction is needed.
+    #
+    # run_id is W3C trace-id shaped, so adopting OpenTelemetry later is a
+    # rename rather than a migration.
+    run_id: PathString | None = None
+    actor: PathString | None = None
 
     archive: PathString
     member: MemberName
@@ -534,6 +552,8 @@ def extract_member(
         # PHASE 2: the sidecar is the commit point. Until it lands the data
         # above is ORPHANED, and the next run redoes this step.
         record = ExtractionRecord(
+            run_id=current_run().run_id,
+            actor=current_run().actor,
             archive=str(archive),
             member=member,
             size_bytes=target.stat().st_size,

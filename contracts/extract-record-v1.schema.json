@@ -8,6 +8,20 @@
   "additionalProperties": false,
   "description": "Sidecar attesting which bytes were extracted, from which archive.",
   "properties": {
+    "actor": {
+      "anyOf": [
+        {
+          "description": "Non-empty filesystem path, recorded for provenance",
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actor"
+    },
     "archive": {
       "description": "Non-empty filesystem path, recorded for provenance",
       "minLength": 1,
@@ -39,6 +53,20 @@
       "pattern": "^[^/\\\\]+$",
       "title": "Member",
       "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "description": "Non-empty filesystem path, recorded for provenance",
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
     },
     "schema_version": {
       "$ref": "#/$defs/ExtractRecordVersion",
