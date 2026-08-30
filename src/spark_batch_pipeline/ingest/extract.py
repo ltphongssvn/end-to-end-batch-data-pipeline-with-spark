@@ -83,6 +83,7 @@ import zipfile
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -110,6 +111,31 @@ from spark_batch_pipeline.valuetypes import (
     Sha256,
     UtcTimestamp,
 )
+
+# VERSIONED CONTRACT. A sidecar outlives the code that wrote it -- it is read on
+# every later run, possibly by a newer version of this module. Without a version
+# a future reader cannot tell whether a missing field means "v1, which never had
+# it" or "v2, corrupted". Kubernetes carries apiVersion in every manifest for
+# the same reason: configuration survives the binary that produced it.
+#
+# The Literal is the dispatch point. A reader pinned to v1 fails loudly on a v2
+# sidecar instead of silently misreading it, and when v2 arrives the two models
+# become a discriminated union keyed on this field.
+#
+# DEFAULTED, WHICH IS THE NON-BREAKING FORM. Adding an optional field with a
+# default is the standard backward-compatible change; Avro and Protobuf rely on
+# exactly this, populating the default when deserializing older records.
+# Sidecars written before this field existed have precisely the v1 field set, so
+# reading them as v1 is accurate rather than a fudge. Requiring it would make
+# every existing sidecar unparseable -- safe, because the orphan model redoes the
+# step, but it would re-download 283MB and re-extract 198MB to recover a version
+# string describing a shape that already matches.
+#
+# WHEN v2 ARRIVES: add a new literal, never repurpose this one. Changing the
+# meaning of an existing default silently rewrites the interpretation of every
+# historical record.
+type ExtractRecordVersion = Literal["extract-record/v1"]
+EXTRACT_RECORD_VERSION: Final[ExtractRecordVersion] = "extract-record/v1"
 
 _COPY_BYTES = 8 * 1024 * 1024
 _CRC_MASK = 0xFFFFFFFF
@@ -140,6 +166,9 @@ class ExtractionRecord(BaseModel):
     # Pydantic is looser from JSON by design, so extracted_at still parses from
     # an ISO string and the sidecar round trip is unaffected.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    # First field so it is the first key a human sees in the JSON.
+    schema_version: ExtractRecordVersion = EXTRACT_RECORD_VERSION
 
     archive: PathString
     member: MemberName
@@ -268,8 +297,16 @@ def _read_record(record_file: Path) -> ExtractionRecord | None:
     if not record_file.is_file():
         return None
     try:
+        # THE ONLY PLACE A SIDECAR IS PARSED. Version handling belongs here and
+        # nowhere else: letting each caller branch on schema_version is the
+        # documented antipattern, because the branches multiply and drift. When
+        # v2 exists, this function upcasts to the current model and every caller
+        # keeps working unchanged.
         return ExtractionRecord.model_validate_json(record_file.read_text())
     except (ValidationError, ValueError, UnicodeDecodeError):
+        # Includes a sidecar written by a NEWER version: an unknown
+        # schema_version fails the Literal, so it is treated as unreadable and
+        # the step is redone rather than misinterpreted.
         return None
 
 
