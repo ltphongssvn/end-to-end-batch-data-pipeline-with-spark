@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "IngestManifestVersion": {
+      "const": "ingest-manifest/v1",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Provenance record for one fetched artifact.",
+  "properties": {
+    "etag": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Etag"
+    },
+    "filename": {
+      "description": "Non-empty filesystem path, recorded for provenance",
+      "minLength": 1,
+      "title": "Filename",
+      "type": "string"
+    },
+    "ingested_at": {
+      "description": "Timezone-aware timestamp; naive values are rejected",
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
+    },
+    "last_modified": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Modified"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/IngestManifestVersion",
+      "default": "ingest-manifest/v1"
+    },
+    "sha256": {
+      "description": "SHA-256 digest, 64 lowercase hex digits",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "size_bytes": {
+      "description": "Size in bytes",
+      "minimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "source_name": {
+      "description": "Non-empty filesystem path, recorded for provenance",
+      "minLength": 1,
+      "title": "Source Name",
+      "type": "string"
+    },
+    "url": {
+      "description": "Verbatim URL as requested; not normalized",
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_name",
+    "filename",
+    "url",
+    "size_bytes",
+    "sha256",
+    "ingested_at"
+  ],
+  "title": "IngestManifest",
+  "type": "object"
+}

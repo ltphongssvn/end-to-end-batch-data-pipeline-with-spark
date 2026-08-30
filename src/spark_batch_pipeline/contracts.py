@@ -27,12 +27,36 @@ from typing import Final
 
 from pydantic import BaseModel
 
+from spark_batch_pipeline.ingest.extract import (
+    EXTRACT_RECORD_VERSION,
+    ExtractionRecord,
+)
+from spark_batch_pipeline.ingest.fetch import INGEST_MANIFEST_VERSION, IngestManifest
 from spark_batch_pipeline.ingest.probe import SCHEMA_VERSION, WdiProbeResult
 
 CONTRACTS_DIR: Final = Path(__file__).resolve().parents[2] / "contracts"
 
+# Every artifact that crosses a process boundary and carries a schema_version.
+#
+# THE FILENAME IS DERIVED FROM THE VERSION STRING, deliberately. A published
+# schema is immutable: when v2 arrives its file lands BESIDE v1 instead of
+# overwriting it, so the directory becomes a readable history of every shape
+# this pipeline has written -- which is precisely what someone holding an old
+# sidecar needs in order to interpret it.
+#
+# The version also travels inside each document, not only in the filename. A
+# file can be renamed, copied, or read from a stream where the name is gone;
+# the schema_version field cannot be separated from the data it describes.
+#
+# WHAT BUMPS A VERSION: renaming a field, removing one, narrowing a type, or
+# changing the meaning of an existing default. Adding an optional field WITH a
+# default stays v1, which is the standard backward-compatible change -- old
+# records simply take the default, exactly as Avro and Protobuf treat it. Either
+# way check:contracts turns the change into a reviewable diff.
 CONTRACTS: Final[dict[str, type[BaseModel]]] = {
     f"{SCHEMA_VERSION.replace('/', '-')}.schema.json": WdiProbeResult,
+    f"{INGEST_MANIFEST_VERSION.replace('/', '-')}.schema.json": IngestManifest,
+    f"{EXTRACT_RECORD_VERSION.replace('/', '-')}.schema.json": ExtractionRecord,
 }
 
 

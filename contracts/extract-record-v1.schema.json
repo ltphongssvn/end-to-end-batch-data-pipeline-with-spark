@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "ExtractRecordVersion": {
+      "const": "extract-record/v1",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Sidecar attesting which bytes were extracted, from which archive.",
+  "properties": {
+    "archive": {
+      "description": "Non-empty filesystem path, recorded for provenance",
+      "minLength": 1,
+      "title": "Archive",
+      "type": "string"
+    },
+    "archive_sha256": {
+      "description": "SHA-256 digest, 64 lowercase hex digits",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Archive Sha256",
+      "type": "string"
+    },
+    "crc32": {
+      "description": "CRC-32 checksum, unsigned 32-bit",
+      "maximum": 4294967295,
+      "minimum": 0,
+      "title": "Crc32",
+      "type": "integer"
+    },
+    "extracted_at": {
+      "description": "Timezone-aware timestamp; naive values are rejected",
+      "format": "date-time",
+      "title": "Extracted At",
+      "type": "string"
+    },
+    "member": {
+      "description": "Archive member name, no path separators",
+      "minLength": 1,
+      "pattern": "^[^/\\\\]+$",
+      "title": "Member",
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/ExtractRecordVersion",
+      "default": "extract-record/v1"
+    },
+    "sha256": {
+      "description": "SHA-256 digest, 64 lowercase hex digits",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "size_bytes": {
+      "description": "Size in bytes",
+      "minimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "archive",
+    "member",
+    "size_bytes",
+    "sha256",
+    "archive_sha256",
+    "crc32",
+    "extracted_at"
+  ],
+  "title": "ExtractionRecord",
+  "type": "object"
+}

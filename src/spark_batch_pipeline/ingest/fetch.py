@@ -58,6 +58,7 @@ import hashlib
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Final, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -78,6 +79,18 @@ from spark_batch_pipeline.valuetypes import (
 
 # 8 MiB blocks: syscall overhead is negligible on a 283 MB file, and memory
 # stays flat regardless of artifact size.
+# VERSIONED CONTRACT, matching ExtractionRecord. A manifest outlives the code
+# that wrote it, and extract.py copies its sha256 forward into archive_sha256 --
+# so an unversioned manifest leaves the chain of custody unreadable to any
+# future reader that cannot tell which shape it is holding.
+#
+# Defaulted, the non-breaking form: existing manifests have exactly the v1 field
+# set, so reading them as v1 is accurate rather than a fudge. When v2 arrives,
+# add a new literal instead of repurposing this one -- changing the meaning of
+# an existing default silently rewrites every historical record.
+type IngestManifestVersion = Literal["ingest-manifest/v1"]
+INGEST_MANIFEST_VERSION: Final[IngestManifestVersion] = "ingest-manifest/v1"
+
 _CHUNK_BYTES = 8 * 1024 * 1024
 
 # Separate connect and read budgets. A read timeout must tolerate a slow origin
@@ -99,6 +112,9 @@ class IngestManifest(BaseModel):
     # from coerced input. Pydantic is looser from JSON by design, so ingested_at
     # still parses from an ISO string and the manifest round trip is unaffected.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    # First field so it is the first key a human sees in the JSON.
+    schema_version: IngestManifestVersion = INGEST_MANIFEST_VERSION
 
     source_name: PathString
     filename: PathString
@@ -152,8 +168,20 @@ def _read_manifest(manifest_file: Path) -> IngestManifest | None:
     if not manifest_file.is_file():
         return None
     try:
+        # THE ONLY PLACE A MANIFEST IS PARSED. Version handling belongs here and
+        # nowhere else: letting each caller branch on schema_version is the
+        # documented antipattern, because the branches multiply and drift. When
+        # v2 exists this function upcasts, and callers keep working unchanged.
         return IngestManifest.model_validate_json(manifest_file.read_text())
     except (ValidationError, ValueError, UnicodeDecodeError):
+        # Includes a manifest written by a NEWER version: an unknown
+        # schema_version fails the Literal, so it is treated as unreadable and
+        # the fetch is redone rather than misinterpreted.
+        #
+        # Deliberately NOT tolerant-reader. Ignoring unknown fields suits
+        # long-lived consumers evolving independently of producers; here the
+        # reader IS the writer, and the artifact is an attestation. Trusting a
+        # claim we cannot interpret is worse than repeating cheap work.
         return None
 
 
