@@ -1,8 +1,94 @@
 {
   "$defs": {
+    "DecisionLimits": {
+      "additionalProperties": false,
+      "description": "The limits the policy applied, as returned by OPA.\n\nValidated rather than trusted: the policy is a separate artifact that can be\nedited independently, so its output crosses a boundary into this process and\nis checked like any other external input.",
+      "properties": {
+        "allowed_methods": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Allowed Methods",
+          "type": "array"
+        },
+        "free_space_headroom": {
+          "exclusiveMinimum": 0,
+          "title": "Free Space Headroom",
+          "type": "number"
+        },
+        "max_compression_ratio": {
+          "exclusiveMinimum": 0,
+          "title": "Max Compression Ratio",
+          "type": "number"
+        },
+        "max_member_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Max Member Bytes",
+          "type": "integer"
+        },
+        "max_members": {
+          "exclusiveMinimum": 0,
+          "title": "Max Members",
+          "type": "integer"
+        },
+        "max_total_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Max Total Bytes",
+          "type": "integer"
+        },
+        "required_digest": {
+          "title": "Required Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "max_member_bytes",
+        "max_total_bytes",
+        "max_members",
+        "max_compression_ratio",
+        "allowed_methods",
+        "free_space_headroom",
+        "required_digest"
+      ],
+      "title": "DecisionLimits",
+      "type": "object"
+    },
     "ExtractRecordVersion": {
       "const": "extract-record/v1",
       "type": "string"
+    },
+    "ExtractionDecision": {
+      "additionalProperties": false,
+      "description": "One authorization decision, suitable for an audit record.",
+      "properties": {
+        "allow": {
+          "title": "Allow",
+          "type": "boolean"
+        },
+        "limits": {
+          "$ref": "#/$defs/DecisionLimits"
+        },
+        "policy_version": {
+          "minLength": 1,
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "allow",
+        "policy_version",
+        "reasons",
+        "limits"
+      ],
+      "title": "ExtractionDecision",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -40,6 +126,17 @@
       "minimum": 0,
       "title": "Crc32",
       "type": "integer"
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExtractionDecision"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "extracted_at": {
       "description": "Timezone-aware timestamp; naive values are rejected",

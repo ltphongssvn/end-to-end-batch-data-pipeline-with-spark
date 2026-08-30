@@ -1,222 +1,282 @@
 # tests/test_policy.py
-"""Zero-trust decompression policy.
+"""The Policy Enforcement Point, not the policy.
 
-The governing measurement, taken 2026-08-28: 10MB of zero bytes -- the most
-compressible input that exists -- deflates to 1027.7x, just under DEFLATE's
-theoretical ceiling of 1032. No legitimate single member can exceed that, so a
-ratio threshold below 1032 rejects valid data by construction. Our own fixtures
-reach 28x and 408x while being entirely benign.
+THE RULES ARE TESTED IN REGO. policies/extraction/extraction_test.rego holds 28
+cases at 100% coverage, asserting every deny rule in both directions. Repeating
+them here would recreate exactly what moving policy to Rego eliminated: two
+implementations of one rule, drifting apart. An earlier version of this file did
+that, and it was deleted rather than ported.
 
-That is why the ABSOLUTE byte caps are the control and the ratio is only a
-structural-impossibility check. Size is what exhausts a disk.
+WHAT IS TESTED HERE is the seam the policy cannot reach:
+
+  input construction   the shape handed to OPA is the shape the policy expects.
+                       A transposed field still evaluates -- against the wrong
+                       question.
+  enforcement          limits carried out of a decision are actually applied
+                       per chunk. OPA decides; this module enforces, and only
+                       this side can get that wrong.
+  PDP unavailability   a missing binary, a timeout, or unparseable output must
+                       fail CLOSED. The documented chaos test is "what happens
+                       when the PDP is unreachable".
+
+THE RUNNER IS INJECTED, NOT MONKEYPATCHED. Patching subprocess.run reaches the
+stdlib module object every other module shares -- pytest's own docs warn that
+patching stdlib can break pytest itself -- and it couples the test to HOW the
+engine is invoked rather than what it returns. Injection is the same pattern
+fetch_source uses for httpx.Client.
+
+Inputs are built by a typed helper rather than unpacked from a dict: `**` into
+a typed signature is uncheckable, and mypy said so 34 times.
 """
 
 from __future__ import annotations
 
-import io
-import zipfile
-from pathlib import Path
+import json
 
 import pytest
 from pydantic import ValidationError
 
 from spark_batch_pipeline.ingest.policy import (
-    ExtractionPolicy,
+    DecisionLimits,
+    ExtractionDecision,
+    PolicyUnavailableError,
     PolicyViolationError,
-    check_archive,
-    check_member,
+    build_input,
     enforce_while_writing,
-    safe_member_name,
+    evaluate,
 )
 
-DEFLATE_CEILING = 1032.0
-
-
-def _zip_with(tmp_path: Path, members: dict[str, bytes], name: str = "a.zip") -> Path:
-    path = tmp_path / name
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as bundle:
-        for member, body in members.items():
-            bundle.writestr(member, body)
-    return path
-
-
-def _info_for(body: bytes, name: str = "m.csv") -> zipfile.ZipInfo:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as bundle:
-        bundle.writestr(name, body)
-    with zipfile.ZipFile(buffer) as bundle:
-        return bundle.infolist()[0]
-
-
-# --- Zip Slip (CWE-22) ------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "member",
-    ["../../etc/passwd", "../escape.csv", "/absolute/path.csv", "a/../../b.csv"],
+LIMITS = DecisionLimits(
+    max_member_bytes=4294967296,
+    max_total_bytes=8589934592,
+    max_members=64,
+    max_compression_ratio=1032.0,
+    allowed_methods=(0, 8),
+    free_space_headroom=1.5,
+    required_digest="sha256",
 )
-def test_escaping_member_names_are_refused(member: str) -> None:
-    """Refused, not sanitized. Trimming to a basename neutralizes the traversal
-    but lets two distinct members collapse onto one output name, so the archive
-    still decides which write wins."""
-    with pytest.raises(PolicyViolationError, match="escapes the destination"):
-        safe_member_name(member)
 
 
-@pytest.mark.parametrize("member", ["", "subdir/"])
-def test_empty_and_directory_entries_are_refused(member: str) -> None:
-    with pytest.raises(PolicyViolationError, match="empty or a directory"):
-        safe_member_name(member)
+def real_archive_input(
+    limits_override: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """The real WDI archive, measured 2026-08-28.
 
-
-def test_ordinary_names_pass_through(tmp_path: Path) -> None:
-    assert safe_member_name("WDICSV.csv") == "WDICSV.csv"
-    assert safe_member_name("nested/WDICSV.csv") == "WDICSV.csv"
-
-
-# --- The ratio is a ceiling check, not a tuning knob ------------------------
-
-
-def test_highly_compressible_data_is_not_a_bomb() -> None:
-    """The false positive that makes people disable the scanner.
-
-    Zero bytes are maximally compressible and still cannot pass 1032:1.
+    A typed helper rather than a dict unpacked with `**`: unpacking
+    dict[str, object] into a typed signature cannot be checked, so every call
+    site would silently lose verification.
     """
-    info = _info_for(b"\0" * (4 * 1024 * 1024))
-    ratio = info.file_size / info.compress_size
-
-    assert ratio > 500, "premise: this should be an extreme ratio"
-    assert ratio < DEFLATE_CEILING, "DEFLATE cannot exceed its own ceiling"
-    check_member(info, Path.cwd(), ExtractionPolicy())
-
-
-def test_repetitive_csv_is_not_a_bomb() -> None:
-    """Exactly the shape of this project's own test fixtures."""
-    info = _info_for(b"Country,Code,1960\nAruba,ABW,1.5\n" * 60_000)
-
-    assert info.file_size / info.compress_size > 100
-    check_member(info, Path.cwd(), ExtractionPolicy())
+    return build_input(
+        member_name="WDICSV.csv",
+        file_size=198481686,
+        compress_size=198511971,
+        compress_type=8,
+        member_count=6,
+        declared_total_bytes=282801304,
+        claimed_compressed_bytes=282844464,
+        archive_file_bytes=282845220,
+        free_bytes=500_000_000_000,
+        limits_override=limits_override,
+    )
 
 
-def test_default_ratio_is_the_deflate_ceiling() -> None:
-    """Guards the reasoning: a lower default silently reintroduces false
-    positives on legitimate compressible input."""
-    assert ExtractionPolicy().max_compression_ratio == DEFLATE_CEILING
+def stub_runner(stdout: str):
+    """A runner returning canned OPA output."""
+
+    def _run(_payload: str) -> str:
+        return stdout
+
+    return _run
 
 
-# --- Absolute caps: the real control ----------------------------------------
+def decision_stdout(value: object) -> str:
+    """Wrap a decision value in OPA's eval envelope."""
+    return json.dumps({"result": [{"expressions": [{"value": value}]}]})
 
 
-def test_declared_size_over_the_cap_is_refused() -> None:
-    info = _info_for(b"x" * 5000)
-    with pytest.raises(PolicyViolationError, match="declares"):
-        check_member(info, Path.cwd(), ExtractionPolicy(max_member_bytes=1024))
+# --- Input construction: the contract with the policy ------------------------
+
+
+def test_input_has_the_shape_the_policy_expects() -> None:
+    """The policy denies on any missing field, so a shape change fails loudly
+    instead of silently answering a different question."""
+    payload = real_archive_input()
+
+    assert set(payload) == {"member", "archive", "destination"}
+
+    member = payload["member"]
+    archive = payload["archive"]
+    assert isinstance(member, dict)
+    assert isinstance(archive, dict)
+    assert set(member) == {"name", "file_size", "compress_size", "compress_type"}
+    assert set(archive) == {
+        "member_count",
+        "declared_total_bytes",
+        "claimed_compressed_bytes",
+        "file_bytes",
+    }
+
+
+def test_limits_override_is_omitted_when_absent() -> None:
+    """The policy merges input.limits over its defaults, so an absent override
+    must not appear at all rather than as an empty object."""
+    assert "limits" not in real_archive_input()
+
+
+def test_limits_override_is_passed_through() -> None:
+    assert real_archive_input({"max_members": 3})["limits"] == {"max_members": 3}
+
+
+# --- Live evaluation: proves the wiring, not the rules -----------------------
+
+
+def test_real_archive_is_allowed() -> None:
+    decision = evaluate(real_archive_input())
+
+    assert decision.allow
+    assert decision.policy_version == "extraction-policy/v1"
+    assert decision.reasons == ()
+
+
+def test_decision_carries_the_limits_that_applied() -> None:
+    """The audit answer to "why was this permitted", not merely "what happened"."""
+    limits = evaluate(real_archive_input()).limits
+
+    assert limits.max_compression_ratio == 1032.0
+    assert limits.required_digest == "sha256"
+    assert 8 in limits.allowed_methods
+
+
+def test_denial_reaches_the_caller_with_reasons() -> None:
+    """One rule end to end, proving the plumbing carries a denial. The rules
+    themselves are covered in Rego."""
+    decision = evaluate(real_archive_input({"max_members": 1}))
+
+    assert not decision.allow
+    assert decision.reasons != ()
+
+    with pytest.raises(PolicyViolationError, match="policy denied"):
+        decision.raise_if_denied("WDICSV.csv")
+
+
+def test_denial_names_every_reason_not_just_the_first() -> None:
+    """Fixing one violation at a time when three apply is how an operator
+    concludes the gate is arbitrary."""
+    decision = ExtractionDecision(
+        allow=False,
+        policy_version="extraction-policy/v1",
+        reasons=("first problem", "second problem"),
+        limits=LIMITS,
+    )
+
+    with pytest.raises(PolicyViolationError) as caught:
+        decision.raise_if_denied("m.csv")
+
+    assert "first problem" in str(caught.value)
+    assert "second problem" in str(caught.value)
+
+
+def test_allow_does_not_raise() -> None:
+    ExtractionDecision(allow=True, policy_version="v1", reasons=(), limits=LIMITS).raise_if_denied(
+        "m.csv"
+    )
+
+
+# --- Enforcement: what only this side can get wrong --------------------------
 
 
 def test_streaming_abort_beats_a_lying_header() -> None:
-    """THE guarantee. file_size is attacker-controlled, so an archive can claim
-    1MB and stream 100GB. Only the counter catches that."""
-    honest_looking = _info_for(b"x" * 100)
-    policy = ExtractionPolicy(max_member_bytes=1024)
-
-    check_member(honest_looking, Path.cwd(), policy)  # header passes
+    """THE GUARANTEE. file_size is a field IN the archive and therefore
+    attacker-controlled, so an archive can declare 1MB and stream 100GB. Only
+    the counter catches that, and only this module runs it."""
+    small = LIMITS.model_copy(update={"max_member_bytes": 1024})
 
     with pytest.raises(PolicyViolationError, match="while extracting"):
-        enforce_while_writing(5000, honest_looking.compress_size, honest_looking, policy)
+        enforce_while_writing(5000, 100, "m.csv", small)
 
 
 def test_streaming_abort_reports_where_it_stopped() -> None:
-    info = _info_for(b"x" * 100)
+    small = LIMITS.model_copy(update={"max_member_bytes": 1024})
+
     with pytest.raises(PolicyViolationError, match="aborted after 2,048"):
-        enforce_while_writing(2048, 100, info, ExtractionPolicy(max_member_bytes=1024))
+        enforce_while_writing(2048, 100, "m.csv", small)
 
 
 def test_real_ratio_is_computed_from_written_bytes() -> None:
     """Measured output over compressed input, so a forged header cannot help."""
-    info = _info_for(b"x" * 100)
-    policy = ExtractionPolicy(max_compression_ratio=10.0)
+    tight = LIMITS.model_copy(update={"max_compression_ratio": 10.0})
 
     with pytest.raises(PolicyViolationError, match="real compression ratio"):
-        enforce_while_writing(written=1000, compress_size=10, info=info, policy=policy)
+        enforce_while_writing(1000, 10, "m.csv", tight)
 
 
-# --- Archive-level limits ---------------------------------------------------
+def test_enforcement_passes_within_limits() -> None:
+    enforce_while_writing(500, 100, "m.csv", LIMITS)
 
 
-def test_too_many_members_refused(tmp_path: Path) -> None:
-    """A bomb can be many small members rather than one large one."""
-    archive = _zip_with(tmp_path, {f"m{i}.csv": b"data\n" for i in range(10)})
-
-    with pytest.raises(PolicyViolationError, match="members, limit is"):
-        check_archive(archive, ExtractionPolicy(max_members=5))
+def test_zero_compress_size_skips_the_ratio_check() -> None:
+    """A stored member would divide by zero otherwise."""
+    enforce_while_writing(500, 0, "m.csv", LIMITS)
 
 
-def test_declared_total_over_the_cap_refused(tmp_path: Path) -> None:
-    archive = _zip_with(tmp_path, {"a.csv": b"x" * 5000, "b.csv": b"y" * 5000})
-
-    with pytest.raises(PolicyViolationError, match="bytes uncompressed"):
-        check_archive(archive, ExtractionPolicy(max_total_bytes=1024))
+# --- PDP unavailability: must fail closed ------------------------------------
 
 
-def test_normal_archive_passes_overlap_detection(tmp_path: Path) -> None:
-    """Legitimate archives store each member's bytes once, so compressed sizes
-    sum to no more than the file itself."""
-    archive = _zip_with(tmp_path, {"a.csv": b"alpha\n" * 100, "b.csv": b"beta\n" * 100})
-
-    check_archive(archive, ExtractionPolicy())
-
-
-# --- Compression method allowlist -------------------------------------------
-
-
-def test_disallowed_method_refused(tmp_path: Path) -> None:
-    """Exotic codecs reach far higher ratios than deflate, so they are opt-in."""
-    info = _info_for(b"data")
-    policy = ExtractionPolicy(allowed_methods=frozenset({zipfile.ZIP_STORED}))
-
-    with pytest.raises(PolicyViolationError, match="compression method"):
-        check_member(info, Path.cwd(), policy)
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        pytest.param("not json", id="unparseable"),
+        pytest.param("{}", id="no-result"),
+        pytest.param('{"result": []}', id="empty-result"),
+        pytest.param('{"result": [{"expressions": []}]}', id="no-expressions"),
+    ],
+)
+def test_malformed_output_fails_closed(stdout: str) -> None:
+    """An engine whose answer cannot be read must never be taken as "allowed"."""
+    with pytest.raises(PolicyUnavailableError, match="could not read a decision"):
+        evaluate(real_archive_input(), runner=stub_runner(stdout))
 
 
-def test_stored_and_deflated_are_allowed_by_default() -> None:
-    allowed = ExtractionPolicy().allowed_methods
-    assert zipfile.ZIP_STORED in allowed
-    assert zipfile.ZIP_DEFLATED in allowed
+def test_engine_failure_propagates() -> None:
+    """A runner that cannot reach the engine raises, and evaluate does not
+    swallow it into a default."""
+
+    def _unavailable(_payload: str) -> str:
+        raise PolicyUnavailableError("opa is not installed")
+
+    with pytest.raises(PolicyUnavailableError, match="not installed"):
+        evaluate(real_archive_input(), runner=_unavailable)
 
 
-# --- Disk space -------------------------------------------------------------
+def test_decision_with_unexpected_shape_is_rejected() -> None:
+    """The policy is a separately editable artifact, so its output crosses a
+    boundary into this process and is validated like any external input."""
+    with pytest.raises(ValidationError):
+        evaluate(
+            real_archive_input(),
+            runner=stub_runner(decision_stdout({"allow": True})),
+        )
 
 
-def test_insufficient_free_space_refused(tmp_path: Path) -> None:
-    """Filling a volume takes down the host, not just this job."""
-    info = _info_for(b"x" * 1000)
-    absurd = ExtractionPolicy(free_space_headroom=1e12)
+def test_stubbed_decision_round_trips() -> None:
+    """Confirms the stub exercises the same parsing path as the real engine."""
+    payload = decision_stdout(
+        {
+            "allow": True,
+            "policy_version": "extraction-policy/v1",
+            "reasons": [],
+            "limits": LIMITS.model_dump(),
+        }
+    )
 
-    with pytest.raises(PolicyViolationError, match="free"):
-        check_member(info, tmp_path, absurd)
+    decision = evaluate(real_archive_input(), runner=stub_runner(payload))
 
-
-# --- The policy is data ------------------------------------------------------
-
-
-def test_policy_is_frozen() -> None:
-    """A limit mutated mid-run is not a limit.
-
-    ValidationError specifically, not a bare Exception: a blind catch would pass
-    on an AttributeError or a typo in the field name and assert nothing.
-    """
-    policy = ExtractionPolicy()
-
-    with pytest.raises(ValidationError) as caught:
-        policy.max_members = 1  # type: ignore[misc]
-
-    assert caught.value.errors()[0]["type"] == "frozen_instance"
+    assert decision.allow
+    assert decision.limits == LIMITS
 
 
-def test_policy_rejects_unknown_fields() -> None:
-    """extra='forbid' turns a misspelled limit into a loud failure instead of a
-    silently ignored setting that leaves the default in force."""
-    with pytest.raises(ValidationError) as caught:
-        ExtractionPolicy.model_validate({"max_membrs": 5})
-
-    assert caught.value.errors()[0]["type"] == "extra_forbidden"
+def test_unavailable_is_not_a_violation() -> None:
+    """Different situations, and only one is fixed by installing something.
+    Both stop the extraction."""
+    assert not issubclass(PolicyUnavailableError, PolicyViolationError)
+    assert not issubclass(PolicyViolationError, PolicyUnavailableError)
