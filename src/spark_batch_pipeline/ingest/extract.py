@@ -104,6 +104,7 @@ from spark_batch_pipeline.ingest.policy import (
     evaluate,
 )
 from spark_batch_pipeline.runcontext import current_run
+from spark_batch_pipeline.telemetry import EventName, Outcome, emit, event
 from spark_batch_pipeline.valuetypes import (
     ByteCount,
     Crc32,
@@ -552,7 +553,23 @@ def extract_member(
         if not force and status.state is ExtractionState.COMMITTED:
             if status.record is None:  # pragma: no cover - COMMITTED implies a record
                 raise AssertionError("COMMITTED status without a sidecar record")
+            # The most operationally valuable signal here: it explains why a run
+            # took half a second instead of a minute, which is otherwise
+            # indistinguishable from the work having silently not happened.
+            emit(
+                event(
+                    EventName.EXTRACTION_CACHE_HIT,
+                    member=member,
+                    member_sha256=status.record.sha256,
+                    bytes_total=status.record.size_bytes,
+                    outcome=Outcome.SUCCESS,
+                )
+            )
             return status.record
+
+        # Emitted after the state is resolved, so it carries WHY work is needed:
+        # ABSENT and CORRUPT mean very different things to an operator.
+        emit(event(EventName.EXTRACTION_STARTED, member=member, reason=status.state.value))
 
         declared = status.declared_crc32
 
@@ -588,7 +605,28 @@ def extract_member(
                         limits_override=limits_override,
                     )
                 )
+                # The decision is recorded as it is made, denial included, so an
+                # audit does not depend on an exception reaching a log.
+                if not decision.allow:
+                    emit(
+                        event(
+                            EventName.EXTRACTION_DENIED,
+                            member=member,
+                            policy_version=decision.policy_version,
+                            reason="; ".join(sorted(decision.reasons)),
+                            outcome=Outcome.FAILURE,
+                        )
+                    )
                 decision.raise_if_denied(member)
+
+                emit(
+                    event(
+                        EventName.EXTRACTION_AUTHORIZED,
+                        member=member,
+                        policy_version=decision.policy_version,
+                        bytes_total=info.file_size,
+                    )
+                )
                 limits = decision.limits
 
                 # open(info), NOT open(member). Passing the resolved ZipInfo is
@@ -622,8 +660,31 @@ def extract_member(
                     f"{declared:#010x}, extracted data is {crc:#010x}"
                 )
 
+            # Verified BEFORE publishing, and emitted here so the ordering is
+            # visible in the log: nothing reaches the real name unverified.
+            emit(
+                event(
+                    EventName.EXTRACTION_VERIFIED,
+                    member=member,
+                    crc32=crc,
+                    member_sha256=member_sha,
+                    bytes_total=written,
+                )
+            )
+
             publish(staged, target)
-        except BaseException:
+        except BaseException as exc:
+            # BaseException, matching the cleanup it guards: a KeyboardInterrupt
+            # mid-extraction is exactly the case where knowing how far it got
+            # matters most.
+            emit(
+                event(
+                    EventName.EXTRACTION_FAILED,
+                    member=member,
+                    reason=f"{type(exc).__name__}: {exc}",
+                    outcome=Outcome.FAILURE,
+                )
+            )
             # Never leave staging garbage behind on a failed run.
             staged.unlink(missing_ok=True)
             raise
@@ -643,4 +704,20 @@ def extract_member(
             extracted_at=datetime.now(UTC),
         )
         write_atomic(record_file, record.model_dump_json(indent=2))
+
+        # PUBLISHED is the terminal success event, emitted only after the
+        # sidecar lands -- before that the data is ORPHANED, and reporting
+        # success would claim a commit that had not happened.
+        emit(
+            event(
+                EventName.EXTRACTION_PUBLISHED,
+                member=member,
+                member_sha256=record.sha256,
+                archive_sha256=record.archive_sha256,
+                bytes_total=record.size_bytes,
+                crc32=record.crc32,
+                policy_version=decision.policy_version,
+                outcome=Outcome.SUCCESS,
+            )
+        )
         return record

@@ -39,7 +39,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeFloat,
+    NonNegativeInt,
+)
 
 # Where the policy lives, resolved from this file rather than the working
 # directory: the pipeline runs from the repo root, from a git hook, and from
@@ -82,12 +88,28 @@ class DecisionLimits(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    max_member_bytes: PositiveInt
-    max_total_bytes: PositiveInt
-    max_members: PositiveInt
-    max_compression_ratio: PositiveFloat
+    # NON-NEGATIVE, NOT POSITIVE, AND THAT DISTINCTION IS A BUG FIX.
+    #
+    # A DECISION MODEL MUST BE ABLE TO REPRESENT EVERY DECISION THE POLICY CAN
+    # PRODUCE. These were PositiveInt, which made zero unrepresentable -- but
+    # zero is a legitimate policy stance: "no member of this kind is permitted
+    # at all". The policy correctly denied such a request and then this model
+    # rejected the denial, turning a clean PolicyViolationError into a
+    # ValidationError.
+    #
+    # Failing closed either way, so nothing unsafe happened -- but the failure
+    # was reported as an engine fault rather than a refusal, and the
+    # extraction.denied event never fired. The audit trail vanished exactly
+    # when something was refused, which is when it matters most.
+    #
+    # An over-strict constraint on an OUTPUT is not extra safety; it is the
+    # enforcement point disagreeing with the policy about what is expressible.
+    max_member_bytes: NonNegativeInt
+    max_total_bytes: NonNegativeInt
+    max_members: NonNegativeInt
+    max_compression_ratio: NonNegativeFloat
     allowed_methods: tuple[int, ...]
-    free_space_headroom: PositiveFloat
+    free_space_headroom: NonNegativeFloat
     required_digest: str
 
 

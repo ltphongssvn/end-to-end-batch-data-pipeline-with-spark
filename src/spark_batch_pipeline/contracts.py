@@ -33,6 +33,7 @@ from spark_batch_pipeline.ingest.extract import (
 )
 from spark_batch_pipeline.ingest.fetch import INGEST_MANIFEST_VERSION, IngestManifest
 from spark_batch_pipeline.ingest.probe import SCHEMA_VERSION, WdiProbeResult
+from spark_batch_pipeline.telemetry import PIPELINE_EVENT_VERSION, PipelineEvent
 
 CONTRACTS_DIR: Final = Path(__file__).resolve().parents[2] / "contracts"
 
@@ -57,6 +58,9 @@ CONTRACTS: Final[dict[str, type[BaseModel]]] = {
     f"{SCHEMA_VERSION.replace('/', '-')}.schema.json": WdiProbeResult,
     f"{INGEST_MANIFEST_VERSION.replace('/', '-')}.schema.json": IngestManifest,
     f"{EXTRACT_RECORD_VERSION.replace('/', '-')}.schema.json": ExtractionRecord,
+    # Telemetry is a contract like any other: an event whose shape drifts
+    # breaks every query and dashboard built on it, silently.
+    f"{PIPELINE_EVENT_VERSION.replace('/', '-')}.schema.json": PipelineEvent,
 }
 
 
