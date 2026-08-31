@@ -12,27 +12,27 @@
           "type": "array"
         },
         "free_space_headroom": {
-          "exclusiveMinimum": 0,
+          "minimum": 0,
           "title": "Free Space Headroom",
           "type": "number"
         },
         "max_compression_ratio": {
-          "exclusiveMinimum": 0,
+          "minimum": 0,
           "title": "Max Compression Ratio",
           "type": "number"
         },
         "max_member_bytes": {
-          "exclusiveMinimum": 0,
+          "minimum": 0,
           "title": "Max Member Bytes",
           "type": "integer"
         },
         "max_members": {
-          "exclusiveMinimum": 0,
+          "minimum": 0,
           "title": "Max Members",
           "type": "integer"
         },
         "max_total_bytes": {
-          "exclusiveMinimum": 0,
+          "minimum": 0,
           "title": "Max Total Bytes",
           "type": "integer"
         },
