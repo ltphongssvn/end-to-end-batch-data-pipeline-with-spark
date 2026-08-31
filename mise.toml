@@ -105,10 +105,10 @@ depends = [
   # opa check --strict, regal, and 28 Rego tests at 100% coverage.
   "check:policy",
   "check:policy-coverage",
-  # Minimum instrumentation, enforced. extraction was instrumented and
-  # fetch was not, and nothing noticed until a hand audit; a gate does not
-  # rely on anyone remembering.
-  "check:observability",
+  # Every source-derived policy in ONE query: minimum instrumentation and the
+  # acquisition boundary. Both were conventions nothing enforced until they
+  # became gates.
+  "check:policy-decisions",
   "check:leaks-history",
 ]
 run = "uv run ruff format --check ."
@@ -548,41 +548,41 @@ if overall < 100.0:
 "
 '''
 
-[tasks."check:observability"]
-description = "Fail if a module doing observable work emits no telemetry"
-# OBSERVABILITY AS CODE, in the literal sense: the same CI that governs the
-# software governs what the software must make visible.
+[tasks."check:policy-decisions"]
+description = "Evaluate every source-derived policy against the codebase"
+# ONE STEP, ONE QUERY, EVERY DECISION.
 #
-# THE FAILURE THIS PREVENTS ALREADY HAPPENED. extraction was instrumented and
-# fetch was not, and nothing noticed -- a 283MB transfer with bounded retries
-# ran blind until someone audited by hand. Telemetry added by good intentions
-# decays; telemetry required by a gate does not.
+# A task per policy is how a pipeline rots: each addition is locally reasonable
+# and the accumulated result is a quality policy nobody examines as a whole.
+# Two tasks would AST-walk the package twice, evaluate twice on an input that
+# had not changed between them, and report two isolated failures when both came
+# from the same unclassified new file.
 #
-# The inventory comes from an AST walk rather than grep, because this project
-# has repeatedly been bitten by grep counting matches inside docstrings. A
-# module described as emitting in a comment must not read as instrumented.
+# policies/main/main.rego composes the others and unions their deny reasons --
+# OPA's documented entrypoint pattern -- so composition lives in the policy
+# language where opa test and coverage reach it, not in a Python loop.
 #
-# OPA evaluates it, reusing the engine that already decides extraction limits
-# rather than growing a second bespoke checker. A newly added module is
-# UNCLASSIFIED and fails until someone classifies it deliberately -- which is
-# the change control that keeps the exemption list from becoming drift with
-# better branding.
-run = '''
-set -euo pipefail
-mkdir -p .scratch
-uv run python scripts/instrumentation_inventory.py > .scratch/inventory.json
-result="$(opa eval --format json --data policies/ \
-  --input .scratch/inventory.json 'data.observability.decision')"
-
-echo "$result" | uv run python -c "
-import json, sys
-decision = json.load(sys.stdin)['result'][0]['expressions'][0]['value']
-if decision['allow']:
-    print(f\"instrumentation policy satisfied ({decision['policy_version']})\")
-    sys.exit(0)
-print('MINIMUM INSTRUMENTATION NOT MET:', file=sys.stderr)
-for reason in sorted(decision['reasons']):
-    print(f'  {reason}', file=sys.stderr)
-sys.exit(1)
-"
-'''
+# THE SPLIT THAT IS KEPT, because it is a difference in kind:
+#   check:policy           are the policies well-formed and tested?
+#   check:policy-coverage  is every policy line exercised?
+#   this task              does the CODEBASE satisfy them?
+#
+# NO sources/outputs CACHING, deliberately. mise can skip a task whose outputs
+# are newer than its inputs; this runs in about 250ms, so caching would save
+# nothing measurable while introducing the question of whether the gate ran at
+# all. A skipped security check reporting success is the failure this project
+# removes everywhere else.
+#
+# WHAT IT ENFORCES TODAY:
+#   observability  a module doing observable work must emit, report terminal
+#                  outcomes, and report latency. extraction was instrumented
+#                  and fetch was not, and nothing noticed until a hand audit.
+#   architecture   the ingest layer must not reach Spark, TRANSITIVELY. Spark
+#                  uses speculative execution: a slow task is duplicated and
+#                  whichever finishes first wins, so a 283MB download inside a
+#                  transformation runs an unpredictable number of times by
+#                  design. atomicio would make that safe without making it
+#                  correct -- the work would still repeat, and the extraction
+#                  decision would be taken once per attempt, not once per
+#                  artifact.
+run = "uv run python scripts/evaluate_policies.py"

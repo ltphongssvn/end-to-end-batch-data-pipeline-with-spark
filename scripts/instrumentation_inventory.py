@@ -90,22 +90,94 @@ def _passes_duration(tree: ast.AST) -> bool:
     )
 
 
+def _direct_imports(tree: ast.AST) -> set[str]:
+    """Root package of every import in the module.
+
+    Root only: pyspark.sql.functions and pyspark are the same dependency for
+    a layering rule, and recording full dotted paths would force the policy
+    to enumerate submodules it cannot know in advance.
+    """
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            roots.add(node.module)
+    return roots
+
+
+def _internal_target(module: str, known: set[str]) -> str | None:
+    """Map an import onto a module path inside this package, or None."""
+    prefix = "spark_batch_pipeline."
+    if not module.startswith(prefix):
+        return None
+    candidate = module[len(prefix) :].replace(".", "/") + ".py"
+    return candidate if candidate in known else None
+
+
+def _transitive(direct: dict[str, set[str]], externals: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Effective external dependencies, following internal imports.
+
+    THE POINT OF THE CLOSURE. A flat scan says ingest/extract.py does not
+    import pyspark, and that is true and insufficient: if it imported
+    session.py, which imports pyspark, the dependency would be just as real
+    and completely invisible. Import Linter follows indirect chains for
+    exactly this reason; computing the closure here keeps enforcement in one
+    engine instead of adding a second tool that overlaps OPA.
+
+    Iterates to a fixed point rather than recursing, so an import cycle
+    terminates instead of overflowing the stack.
+    """
+    effective = {path: set(deps) for path, deps in externals.items()}
+    changed = True
+    while changed:
+        changed = False
+        for path, internals in direct.items():
+            for target in internals:
+                merged = effective[path] | effective.get(target, set())
+                if merged != effective[path]:
+                    effective[path] = merged
+                    changed = True
+    return effective
+
+
 def inventory(root: Path = PACKAGE_ROOT) -> list[dict[str, object]]:
     """One entry per module, sorted, so the policy input is deterministic."""
-    modules: list[dict[str, object]] = []
-
+    trees: dict[str, ast.AST] = {}
     for path in sorted(root.rglob("*.py")):
         if path.name == "__init__.py" or "__pycache__" in path.parts:
             continue
+        trees[path.relative_to(root).as_posix()] = ast.parse(path.read_text())
 
-        tree = ast.parse(path.read_text())
+    known = set(trees)
+    direct_internal: dict[str, set[str]] = {}
+    externals: dict[str, set[str]] = {}
+    for name, tree in trees.items():
+        internal: set[str] = set()
+        external: set[str] = set()
+        for imported in _direct_imports(tree):
+            target = _internal_target(imported, known)
+            if target is not None:
+                internal.add(target)
+            else:
+                external.add(imported.split(".")[0])
+        direct_internal[name] = internal
+        externals[name] = external
+
+    effective = _transitive(direct_internal, externals)
+
+    modules: list[dict[str, object]] = []
+    for name, tree in trees.items():
+        path = root / name
         modules.append(
             {
-                "path": path.relative_to(root).as_posix(),
+                "path": name,
                 "emits": sum(1 for node in ast.walk(tree) if _is_emit_call(node)),
                 "has_success_event": _uses_outcome(tree, "SUCCESS"),
                 "has_failure_event": _uses_outcome(tree, "FAILURE"),
                 "reports_duration": _passes_duration(tree),
+                "imports": sorted(externals[name]),
+                "effective_imports": sorted(effective[name]),
             }
         )
 
