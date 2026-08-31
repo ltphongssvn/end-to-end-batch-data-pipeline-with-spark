@@ -58,6 +58,7 @@ import hashlib
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Final, Literal
 
 import httpx
@@ -289,8 +290,15 @@ def fetch_source(
     # because the lock below serialises writers.
     partial = staging_path(artifact)
 
+    # Timed OUTSIDE the lock body but inside the lock, so the measurement
+    # includes the work and excludes the wait for the lock -- a run that spent
+    # 40s blocked behind another agent did not take 40s to fetch, and reporting
+    # it as such would send an operator hunting a slow network.
+    queued_at = perf_counter()
     with exclusive_lock(artifact):
+        queue_duration = perf_counter() - queued_at
         return _fetch_locked(
+            queue_duration=queue_duration,
             source_name=source_name,
             url=url,
             artifact=artifact,
@@ -304,6 +312,7 @@ def fetch_source(
 
 def _fetch_locked(
     *,
+    queue_duration: float,
     source_name: str,
     url: str,
     artifact: Path,
@@ -315,11 +324,16 @@ def _fetch_locked(
 ) -> IngestManifest:
     """The critical section. Only ever called while holding the artifact lock.
 
+    `elapsed` is filled by the caller's timer when this returns; terminal events
+    read the clock directly because they fire BEFORE that context manager exits.
+
     Split out so the lock scope is visible in one place rather than indenting
     the whole body: everything here -- the completeness check, the transfer, and
     both publishes -- must be serialised. Checking outside the lock and acting
     on the answer is the classic TOCTOU race.
     """
+    started = perf_counter()
+
     # Fast path: a prior run completed this fetch. Re-verify the digest -- a
     # manifest whose artifact was truncated is worse than none, because it
     # asserts an integrity guarantee that no longer holds.
@@ -331,10 +345,14 @@ def _fetch_locked(
             emit(
                 event(
                     EventName.FETCH_CACHE_HIT,
+                    queue_duration=queue_duration,
                     source=source_name,
                     url_full=url,
                     bytes_total=existing.size_bytes,
                     member_sha256=existing.sha256,
+                    # A cache hit still costs a full SHA-256 pass over 283MB,
+                    # so reporting it as instant would hide real work.
+                    duration=perf_counter() - started,
                     outcome=Outcome.SUCCESS,
                 )
             )
@@ -414,10 +432,12 @@ def _fetch_locked(
     emit(
         event(
             EventName.FETCH_PUBLISHED,
+            queue_duration=queue_duration,
             source=source_name,
             url_full=url,
             bytes_total=manifest.size_bytes,
             member_sha256=manifest.sha256,
+            duration=perf_counter() - started,
             outcome=Outcome.SUCCESS,
         )
     )

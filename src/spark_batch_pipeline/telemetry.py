@@ -84,8 +84,8 @@ from spark_batch_pipeline.valuetypes import PathString, UtcTimestamp
 # v2, not an edit of v1. Aligning field names onto OpenTelemetry's spec
 # attributes renames keys on the wire, which is a breaking change by this
 # project's own rule -- so v1 stays published and immutable beside it.
-type PipelineEventVersion = Literal["pipeline-event/v2"]
-PIPELINE_EVENT_VERSION: Final[PipelineEventVersion] = "pipeline-event/v2"
+type PipelineEventVersion = Literal["pipeline-event/v3"]
+PIPELINE_EVENT_VERSION: Final[PipelineEventVersion] = "pipeline-event/v3"
 
 # getLogger(__name__), and a NullHandler so the library is silent by default.
 _LOGGER: Final = logging.getLogger(__name__)
@@ -152,9 +152,33 @@ class PipelineEvent(BaseModel):
     archive_sha256: str | None = None
     member_sha256: str | None = None
 
-    # Measurements. duration_ms names its unit, matching OTel convention, so a
-    # log store never has to guess whether 0.9 means seconds or milliseconds.
-    duration_ms: float | None = Field(default=None, ge=0)
+    # SECONDS, NOT MILLISECONDS, and the earlier comment here was simply wrong
+    # about the convention. OpenTelemetry states that instruments measuring
+    # durations SHOULD use seconds, and it deliberately migrated
+    # http.server.duration (ms) to http.server.request.duration (s) to align
+    # with Prometheus and OpenMetrics, which strongly recommend seconds. A
+    # millisecond field forces a /1e3 into every query that joins this data to
+    # anything else.
+    #
+    # The unit lives in the field DESCRIPTION rather than the name, matching how
+    # the spec carries it, and the name stays `duration` so it maps onto a
+    # duration histogram without renaming later.
+    duration: float | None = Field(
+        default=None, ge=0, description="Service time in seconds, excluding queue wait"
+    )
+
+    # QUEUE TIME, SEPARATE FROM SERVICE TIME. Reporting only one is wrong in
+    # either direction: folding the wait into `duration` makes a contended run
+    # look like a slow disk, while discarding it makes lock contention
+    # invisible -- and ignored queueing is a documented way to hide a root
+    # cause, because serialization bottlenecks appear in no single service's
+    # latency number.
+    #
+    # Six agents contend for the same artifact here, so this is the field that
+    # separates "the network was slow" from "five agents were ahead of us".
+    queue_duration: float | None = Field(
+        default=None, ge=0, description="Seconds spent waiting for the lock"
+    )
     bytes_total: int | None = Field(default=None, ge=0)
     crc32: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
 
@@ -232,7 +256,7 @@ def emit(pipeline_event: PipelineEvent) -> None:
 
 @contextmanager
 def timed() -> Iterator[dict[str, float]]:
-    """Measure a block and expose elapsed milliseconds in the yielded dict.
+    """Measure a block and expose elapsed SECONDS in the yielded dict.
 
     perf_counter, not time(): a wall clock can step backwards across an NTP
     adjustment and yield a negative duration, which the model would then reject
@@ -244,4 +268,4 @@ def timed() -> Iterator[dict[str, float]]:
     try:
         yield holder
     finally:
-        holder["duration_ms"] = (time.perf_counter() - started) * 1000.0
+        holder["duration"] = time.perf_counter() - started

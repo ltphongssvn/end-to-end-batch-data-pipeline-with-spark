@@ -97,6 +97,12 @@ deny contains reason if {
 	reason := sprintf("inventory entry %v has no emits count", [module.path])
 }
 
+deny contains reason if {
+	some module in input.modules
+	not "reports_duration" in object.keys(module)
+	reason := sprintf("inventory entry %v lacks a reports_duration flag", [module.path])
+}
+
 # --- Minimum instrumentation -------------------------------------------------
 
 deny contains reason if {
@@ -122,6 +128,24 @@ deny contains reason if {
 	module.emits > 0
 	not module.has_failure_event
 	reason := sprintf("%v never emits a failure outcome", [module.path])
+}
+
+# LATENCY IS NOT OPTIONAL ON AN INSTRUMENTED MODULE.
+# "Why was this run slow" is the most-asked operational question, and the
+# contract advertised a duration field that no production code populated: the
+# field existed, the timing helper existed and was tested, and nothing called
+# it. Nine green gates missed it, because the rules checked only THAT a module
+# emits and THAT it reports an outcome.
+#
+# A capability a contract advertises but never delivers is worse than an absent
+# field: a query written against it returns nothing, which reads as an absence
+# of slow runs rather than an absence of data.
+deny contains reason if {
+	some module in input.modules
+	module.path in instrumented_modules
+	module.emits > 0
+	not module.reports_duration
+	reason := sprintf("%v emits events but never reports duration", [module.path])
 }
 
 # UNCLASSIFIED is the state every new file starts in, and failing here is the

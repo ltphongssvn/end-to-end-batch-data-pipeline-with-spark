@@ -76,6 +76,20 @@ def _uses_outcome(tree: ast.AST, member: str) -> bool:
     )
 
 
+def _passes_duration(tree: ast.AST) -> bool:
+    """Whether any call passes a `duration=` keyword argument.
+
+    A keyword in a CALL, not a mention. The field existed in the contract, the
+    timing helper existed and was tested, and no production code ever populated
+    it -- nine green gates missed that, because nothing checked whether the
+    value was actually produced.
+    """
+    return any(
+        isinstance(node, ast.Call) and any(keyword.arg == "duration" for keyword in node.keywords)
+        for node in ast.walk(tree)
+    )
+
+
 def inventory(root: Path = PACKAGE_ROOT) -> list[dict[str, object]]:
     """One entry per module, sorted, so the policy input is deterministic."""
     modules: list[dict[str, object]] = []
@@ -91,6 +105,7 @@ def inventory(root: Path = PACKAGE_ROOT) -> list[dict[str, object]]:
                 "emits": sum(1 for node in ast.walk(tree) if _is_emit_call(node)),
                 "has_success_event": _uses_outcome(tree, "SUCCESS"),
                 "has_failure_event": _uses_outcome(tree, "FAILURE"),
+                "reports_duration": _passes_duration(tree),
             }
         )
 

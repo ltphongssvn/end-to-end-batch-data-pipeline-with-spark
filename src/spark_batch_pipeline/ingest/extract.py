@@ -84,6 +84,7 @@ import zipfile
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from time import perf_counter
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -540,6 +541,8 @@ def extract_member(
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    queued_at = perf_counter()
+
     # Refuse a hostile NAME before it is ever used to build a path. Rejecting
     # rather than silently taking the basename keeps two members from
     # collapsing onto one output file.
@@ -547,6 +550,14 @@ def extract_member(
     record_file = ExtractionRecord.path_for(target)
 
     with exclusive_lock(target):
+        # TWO CLOCKS, not one. Time spent waiting for another agent is
+        # not time spent extracting; folding them together would make
+        # contention look like a slow disk, and dropping the wait would
+        # make lock contention invisible -- ignored queueing is a
+        # documented way to hide a root cause.
+        queue_duration = perf_counter() - queued_at
+        started = perf_counter()
+
         # Re-resolve INSIDE the lock. Any status read before acquiring it was
         # advisory and may already be out of date.
         status = inspect_extraction(archive, member, dest_dir)
@@ -559,6 +570,10 @@ def extract_member(
             emit(
                 event(
                     EventName.EXTRACTION_CACHE_HIT,
+                    # A cache hit still verifies CRC and SHA-256 over
+                    # 198MB, so reporting it as instant hides real work.
+                    duration=perf_counter() - started,
+                    queue_duration=queue_duration,
                     member=member,
                     member_sha256=status.record.sha256,
                     bytes_total=status.record.size_bytes,
@@ -680,6 +695,10 @@ def extract_member(
             emit(
                 event(
                     EventName.EXTRACTION_FAILED,
+                    # How long it ran BEFORE failing is the interesting
+                    # part: a policy refusal at 0.01s and a disk failure
+                    # at 60s are very different incidents.
+                    duration=perf_counter() - started,
                     member=member,
                     reason=f"{type(exc).__name__}: {exc}",
                     outcome=Outcome.FAILURE,
@@ -711,6 +730,8 @@ def extract_member(
         emit(
             event(
                 EventName.EXTRACTION_PUBLISHED,
+                duration=perf_counter() - started,
+                queue_duration=queue_duration,
                 member=member,
                 member_sha256=record.sha256,
                 archive_sha256=record.archive_sha256,
