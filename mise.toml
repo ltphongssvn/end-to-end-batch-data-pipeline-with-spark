@@ -105,6 +105,10 @@ depends = [
   # opa check --strict, regal, and 28 Rego tests at 100% coverage.
   "check:policy",
   "check:policy-coverage",
+  # Minimum instrumentation, enforced. extraction was instrumented and
+  # fetch was not, and nothing noticed until a hand audit; a gate does not
+  # rely on anyone remembering.
+  "check:observability",
   "check:leaks-history",
 ]
 run = "uv run ruff format --check ."
@@ -323,7 +327,23 @@ from pathlib import Path
 from spark_batch_pipeline.contracts import write_all
 write_all(Path('$tmp'))
 " >/dev/null
-diff -u contracts "$tmp"
+# DIFF EACH CURRENT CONTRACT, NOT THE WHOLE DIRECTORY. The generator emits
+# only the versions the models currently define, so a directory-level diff
+# reports every SUPERSEDED schema as drift -- and the obvious way to silence it
+# would be deleting them, which is precisely wrong. Versioned schemas coexist so
+# consumers migrate at their own pace, and deleting a published schema is itself
+# a breaking change: someone holding a pipeline-event/v1 payload needs v1 to
+# interpret it. The check is "is every current contract up to date", not "does
+# this directory contain nothing else".
+for generated in "$tmp"/*.schema.json; do
+  name="$(basename "$generated")"
+  if [ ! -f "contracts/$name" ]; then
+    echo "missing committed contract: $name" >&2
+    echo "run: mise run contracts:update" >&2
+    exit 1
+  fi
+  diff -u "contracts/$name" "$generated"
+done
 
 # TRACKED-NESS IS PART OF THE CONTRACT. Regenerating and diffing only proves the
 # file on disk matches the model; it says nothing about whether git will ship
@@ -525,5 +545,44 @@ if overall < 100.0:
             start, end = block['start']['row'], block['end']['row']
             print(f'  UNCOVERED {path}:{start}-{end}', file=sys.stderr)
     sys.exit(1)
+"
+'''
+
+[tasks."check:observability"]
+description = "Fail if a module doing observable work emits no telemetry"
+# OBSERVABILITY AS CODE, in the literal sense: the same CI that governs the
+# software governs what the software must make visible.
+#
+# THE FAILURE THIS PREVENTS ALREADY HAPPENED. extraction was instrumented and
+# fetch was not, and nothing noticed -- a 283MB transfer with bounded retries
+# ran blind until someone audited by hand. Telemetry added by good intentions
+# decays; telemetry required by a gate does not.
+#
+# The inventory comes from an AST walk rather than grep, because this project
+# has repeatedly been bitten by grep counting matches inside docstrings. A
+# module described as emitting in a comment must not read as instrumented.
+#
+# OPA evaluates it, reusing the engine that already decides extraction limits
+# rather than growing a second bespoke checker. A newly added module is
+# UNCLASSIFIED and fails until someone classifies it deliberately -- which is
+# the change control that keeps the exemption list from becoming drift with
+# better branding.
+run = '''
+set -euo pipefail
+mkdir -p .scratch
+uv run python scripts/instrumentation_inventory.py > .scratch/inventory.json
+result="$(opa eval --format json --data policies/ \
+  --input .scratch/inventory.json 'data.observability.decision')"
+
+echo "$result" | uv run python -c "
+import json, sys
+decision = json.load(sys.stdin)['result'][0]['expressions'][0]['value']
+if decision['allow']:
+    print(f\"instrumentation policy satisfied ({decision['policy_version']})\")
+    sys.exit(0)
+print('MINIMUM INSTRUMENTATION NOT MET:', file=sys.stderr)
+for reason in sorted(decision['reasons']):
+    print(f'  {reason}', file=sys.stderr)
+sys.exit(1)
 "
 '''

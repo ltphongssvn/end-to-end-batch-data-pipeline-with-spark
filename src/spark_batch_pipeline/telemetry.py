@@ -44,7 +44,20 @@ that the DATA is correct and correlatable -- which is why run_id is already W3C
 trace-id shaped. Adopting OTel later maps these fields onto spans without
 changing what is recorded.
 
-ATTRIBUTE NAMING follows OpenTelemetry's dotted style. Teams that invent their
+EVENTS ARE DEFINED BEFORE THE CODE THAT EMITS THEM. That ordering is the whole
+of observability-driven development: decide what a feature must make visible,
+then implement it. Instrumenting afterwards produces telemetry shaped by
+whatever the implementation happened to make easy, which is rarely what an
+operator needs at 2am.
+
+SPEC ATTRIBUTES ARE REUSED, NOT REINVENTED. Where OpenTelemetry defines an
+attribute -- url.full, error.type, http.request.resend_count -- this model emits
+that exact name via serialization_alias, because a backend that already
+understands it needs no mapping layer. Anything genuinely local stays in its own
+namespace: putting our meaning under http.* would blur spec-defined attributes
+with invented ones, and that ambiguity is permanent.
+
+ATTRIBUTE NAMING otherwise follows OpenTelemetry's dotted style. Teams that invent their
 own naming end up with telemetry that cannot be correlated, which defeats the
 point. No OTel semantic convention covers archive extraction, so `extraction.*`
 is a local namespace declared here rather than improvised at each call site.
@@ -68,8 +81,11 @@ from spark_batch_pipeline.valuetypes import PathString, UtcTimestamp
 # Versioned exactly like the sidecars. An event outlives the code that emitted
 # it: it lands in a log store and is queried months later, when the only way to
 # know which fields to expect is the version it carries.
-type PipelineEventVersion = Literal["pipeline-event/v1"]
-PIPELINE_EVENT_VERSION: Final[PipelineEventVersion] = "pipeline-event/v1"
+# v2, not an edit of v1. Aligning field names onto OpenTelemetry's spec
+# attributes renames keys on the wire, which is a breaking change by this
+# project's own rule -- so v1 stays published and immutable beside it.
+type PipelineEventVersion = Literal["pipeline-event/v2"]
+PIPELINE_EVENT_VERSION: Final[PipelineEventVersion] = "pipeline-event/v2"
 
 # getLogger(__name__), and a NullHandler so the library is silent by default.
 _LOGGER: Final = logging.getLogger(__name__)
@@ -87,6 +103,13 @@ class EventName(StrEnum):
     silently matches no query, which is worse than none because it looks like
     the operation never happened.
     """
+
+    FETCH_STARTED = "fetch.started"
+    FETCH_CACHE_HIT = "fetch.cache_hit"
+    FETCH_RESUMED = "fetch.resumed"
+    FETCH_RETRIED = "fetch.retried"
+    FETCH_PUBLISHED = "fetch.published"
+    FETCH_FAILED = "fetch.failed"
 
     EXTRACTION_STARTED = "extraction.started"
     EXTRACTION_CACHE_HIT = "extraction.cache_hit"
@@ -139,6 +162,33 @@ class PipelineEvent(BaseModel):
     policy_version: str | None = None
     reason: str | None = None
 
+    # SPEC ATTRIBUTES, emitted under their OpenTelemetry names via
+    # serialization_alias. Python identifiers cannot contain dots, so the alias
+    # is what puts url.full and error.type on the wire under the names every
+    # OTel-aware backend already understands.
+    #
+    # Reusing a spec attribute beats inventing one: a backend that knows
+    # error.type can group failures without a mapping layer, and a custom
+    # error_kind would need translating in every query forever.
+    url_full: str | None = Field(default=None, serialization_alias="url.full")
+    error_type: str | None = Field(default=None, serialization_alias="error.type")
+
+    # http.request.resend_count is the SPEC attribute for retries: "the ordinal
+    # number of the request resend attempt". Absent on the first request, 1 on
+    # the first resend. Inventing `attempt` here would have been the documented
+    # mistake -- telemetry that cannot correlate with anything else.
+    #
+    # A 283MB transfer can resend four times with exponential backoff and
+    # currently leaves no trace, so "why was this run slow" has no answer.
+    resend_count: int | None = Field(
+        default=None, ge=1, serialization_alias="http.request.resend_count"
+    )
+
+    # Custom, and namespaced separately on purpose: putting our own meaning
+    # under http.* would blur spec-defined and locally-invented attributes.
+    resumed_from_bytes: int | None = Field(default=None, ge=0)
+    source: str | None = None
+
     outcome: Outcome | None = None
 
 
@@ -176,7 +226,7 @@ def emit(pipeline_event: PipelineEvent) -> None:
         "%s member=%s",
         pipeline_event.name.value,
         pipeline_event.member or "-",
-        extra={EVENT_KEY: pipeline_event.model_dump(mode="json", exclude_none=True)},
+        extra={EVENT_KEY: pipeline_event.model_dump(mode="json", exclude_none=True, by_alias=True)},
     )
 
 
