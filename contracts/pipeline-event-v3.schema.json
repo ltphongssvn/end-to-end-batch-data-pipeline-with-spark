@@ -1,0 +1,262 @@
+{
+  "$defs": {
+    "EventName": {
+      "description": "Every event this pipeline can emit.\n\nAn enum, not free strings: a mistyped event name produces telemetry that\nsilently matches no query, which is worse than none because it looks like\nthe operation never happened.",
+      "enum": [
+        "fetch.started",
+        "fetch.cache_hit",
+        "fetch.resumed",
+        "fetch.retried",
+        "fetch.published",
+        "fetch.failed",
+        "extraction.started",
+        "extraction.cache_hit",
+        "extraction.authorized",
+        "extraction.denied",
+        "extraction.verified",
+        "extraction.published",
+        "extraction.failed"
+      ],
+      "title": "EventName",
+      "type": "string"
+    },
+    "Outcome": {
+      "description": "Terminal disposition, so a query counts failures without parsing text.",
+      "enum": [
+        "success",
+        "failure"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "PipelineEventVersion": {
+      "const": "pipeline-event/v3",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One observable moment, validated before it is emitted.\n\nFrozen and strict for the same reason the attestation records are: an event\nassembled from coerced input has numbers that cannot be trusted, and a\ndashboard built on untrustworthy numbers is worse than no dashboard.",
+  "properties": {
+    "actor": {
+      "description": "Non-empty filesystem path, recorded for provenance",
+      "minLength": 1,
+      "title": "Actor",
+      "type": "string"
+    },
+    "archive_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Archive Sha256"
+    },
+    "bytes_total": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Bytes Total"
+    },
+    "crc32": {
+      "anyOf": [
+        {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Crc32"
+    },
+    "duration": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Service time in seconds, excluding queue wait",
+      "title": "Duration"
+    },
+    "error_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Type"
+    },
+    "member": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Member"
+    },
+    "member_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Member Sha256"
+    },
+    "name": {
+      "$ref": "#/$defs/EventName"
+    },
+    "occurred_at": {
+      "description": "Timezone-aware timestamp; naive values are rejected",
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Outcome"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "policy_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Policy Version"
+    },
+    "queue_duration": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Seconds spent waiting for the lock",
+      "title": "Queue Duration"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "resend_count": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resend Count"
+    },
+    "resumed_from_bytes": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resumed From Bytes"
+    },
+    "run_id": {
+      "description": "Non-empty filesystem path, recorded for provenance",
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/PipelineEventVersion",
+      "default": "pipeline-event/v3"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source"
+    },
+    "url_full": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Url Full"
+    }
+  },
+  "required": [
+    "name",
+    "occurred_at",
+    "run_id",
+    "actor"
+  ],
+  "title": "PipelineEvent",
+  "type": "object"
+}

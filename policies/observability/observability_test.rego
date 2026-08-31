@@ -21,18 +21,21 @@ valid_inventory := {"modules": [
 		"emits": 6,
 		"has_success_event": true,
 		"has_failure_event": true,
+		"reports_duration": true,
 	},
 	{
 		"path": "ingest/extract.py",
 		"emits": 7,
 		"has_success_event": true,
 		"has_failure_event": true,
+		"reports_duration": true,
 	},
 	{
 		"path": "telemetry.py",
 		"emits": 0,
 		"has_success_event": false,
 		"has_failure_event": false,
+		"reports_duration": false,
 	},
 ]}
 
@@ -148,6 +151,7 @@ test_exempt_module_may_be_silent if {
 		"emits": 0,
 		"has_success_event": false,
 		"has_failure_event": false,
+		"reports_duration": false,
 	}]}
 	observability.allow with input as exempt_only
 }
@@ -160,6 +164,7 @@ test_exempt_module_need_not_report_outcomes if {
 		"emits": 0,
 		"has_success_event": false,
 		"has_failure_event": false,
+		"reports_duration": false,
 	}]}
 	count(observability.deny) == 0 with input as exempt_only
 }
@@ -172,4 +177,31 @@ test_every_exemption_carries_a_reason if {
 		count(path) > 0
 		count(reason) > 0
 	}
+}
+
+test_module_without_duration_denies if {
+	# The gap that shipped: emissions present, outcomes present, latency never
+	# reported. Nine green gates missed it because nothing checked.
+	silent := json.patch(valid_inventory, [{
+		"op": "replace",
+		"path": "/modules/0/reports_duration",
+		"value": false,
+	}])
+	not observability.allow with input as silent
+}
+
+test_duration_reason_names_the_module if {
+	silent := json.patch(valid_inventory, [{
+		"op": "replace",
+		"path": "/modules/0/reports_duration",
+		"value": false,
+	}])
+	expected := "ingest/fetch.py emits events but never reports duration"
+	expected in observability.deny with input as silent
+}
+
+test_entry_without_duration_flag_denies if {
+	# A malformed inventory must fail rather than pass by omission.
+	broken := {"modules": [{"path": "ingest/fetch.py", "emits": 1}]}
+	not observability.allow with input as broken
 }

@@ -220,7 +220,7 @@ def test_absent_fields_are_omitted_not_null(caplog: pytest.LogCaptureFixture) ->
     with caplog.at_level(logging.INFO):
         emit(event(EventName.EXTRACTION_STARTED, member=MEMBER))
 
-    assert "duration_ms" not in captured(caplog)[0]
+    assert "duration" not in captured(caplog)[0]
 
 
 def test_payload_cannot_collide_with_logrecord(
@@ -242,7 +242,10 @@ def test_payload_cannot_collide_with_logrecord(
 def test_invalid_event_is_rejected_before_emission() -> None:
     """Validated at construction, so a malformed event never reaches a log."""
     with pytest.raises(ValidationError):
-        event(EventName.EXTRACTION_STARTED, duration_ms=-1)
+        # The REAL field name. With the old name this raised via
+        # extra=forbid on an unknown key, so it passed whether or not
+        # the ge=0 constraint existed -- right outcome, wrong cause.
+        event(EventName.EXTRACTION_STARTED, duration=-1)
 
     with pytest.raises(ValidationError):
         event(EventName.EXTRACTION_STARTED, unknown_field="x")
@@ -267,7 +270,15 @@ def test_timed_reports_a_non_negative_duration() -> None:
     with timed() as elapsed:
         pass
 
-    assert elapsed["duration_ms"] >= 0
+    assert elapsed["duration"] >= 0
+
+    # SECONDS, NOT MILLISECONDS, and this assertion is the guard on that.
+    # OpenTelemetry states durations SHOULD use seconds, and migrated
+    # http.server.duration (ms) to http.server.request.duration (s) to
+    # align with Prometheus. A consumer reading 0.87 as milliseconds is
+    # wrong by 1000x and silently so, which is why the unit is pinned by
+    # a test rather than by a comment.
+    assert elapsed["duration"] < 1.0, "an empty block cannot take a second"
 
 
 def test_timed_records_duration_even_when_the_block_fails() -> None:
@@ -275,7 +286,7 @@ def test_timed_records_duration_even_when_the_block_fails() -> None:
     with pytest.raises(RuntimeError), timed() as elapsed:
         raise RuntimeError("boom")
 
-    assert "duration_ms" in elapsed
+    assert "duration" in elapsed
 
 
 def test_library_stays_silent_until_asked() -> None:
