@@ -70,6 +70,7 @@ from spark_batch_pipeline.atomicio import (
     write_atomic,
 )
 from spark_batch_pipeline.runcontext import current_run
+from spark_batch_pipeline.telemetry import EventName, Outcome, emit, event
 from spark_batch_pipeline.valuetypes import (
     ByteCount,
     PathString,
@@ -203,6 +204,43 @@ def _read_manifest(manifest_file: Path) -> IngestManifest | None:
         return None
 
 
+def _emit_retry(source: str, url: str, exc: Exception, attempt: int) -> None:
+    """One resend, named by the OpenTelemetry spec attribute.
+
+    `attempt` is 0-based in the loop; the spec counts the ordinal of the RESEND,
+    so the first retry is 1 and the original request carries nothing.
+    """
+    emit(
+        event(
+            EventName.FETCH_RETRIED,
+            source=source,
+            url_full=url,
+            error_type=type(exc).__name__,
+            reason=str(exc),
+            resend_count=attempt + 1,
+        )
+    )
+
+
+def _emit_failure(source: str, url: str, exc: Exception, resend_count: int | None = None) -> None:
+    """Terminal failure, emitted BEFORE the raise.
+
+    An exception only becomes observable if something upstream catches and logs
+    it. The event does not depend on that.
+    """
+    emit(
+        event(
+            EventName.FETCH_FAILED,
+            source=source,
+            url_full=url,
+            error_type=type(exc).__name__,
+            reason=str(exc),
+            resend_count=resend_count,
+            outcome=Outcome.FAILURE,
+        )
+    )
+
+
 def _sleep_backoff(attempt: int) -> None:
     time.sleep(_BACKOFF_BASE_SECONDS**attempt)
 
@@ -288,10 +326,24 @@ def _fetch_locked(
     if not force and artifact.is_file():
         existing = _read_manifest(manifest_file)
         if existing is not None and sha256_of(artifact) == existing.sha256:
+            # Explains why a run finished in seconds rather than minutes.
+            # Without it a cached run and a silently-failed one look identical.
+            emit(
+                event(
+                    EventName.FETCH_CACHE_HIT,
+                    source=source_name,
+                    url_full=url,
+                    bytes_total=existing.size_bytes,
+                    member_sha256=existing.sha256,
+                    outcome=Outcome.SUCCESS,
+                )
+            )
             return existing
 
     if force and partial.exists():
         partial.unlink()
+
+    emit(event(EventName.FETCH_STARTED, source=source_name, url_full=url))
 
     owns_client = client is None
     # follow_redirects=True is load-bearing; see the module docstring.
@@ -301,20 +353,36 @@ def _fetch_locked(
         headers: dict[str, str] = {}
         for attempt in range(_MAX_ATTEMPTS):
             resume_from = partial.stat().st_size if partial.exists() else 0
+            if resume_from:
+                # A resumed 250MB transfer and a fresh one are
+                # indistinguishable by duration alone.
+                emit(
+                    event(
+                        EventName.FETCH_RESUMED,
+                        source=source_name,
+                        url_full=url,
+                        resumed_from_bytes=resume_from,
+                    )
+                )
             try:
                 headers, _ = _stream_to_part(active, url, partial, resume_from)
                 break
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in _RETRYABLE_STATUS:
+                    _emit_failure(source_name, url, exc)
                     raise
                 if attempt == _MAX_ATTEMPTS - 1:
+                    _emit_failure(source_name, url, exc, resend_count=attempt + 1)
                     raise
+                _emit_retry(source_name, url, exc, attempt)
                 _sleep_backoff(attempt)
-            except httpx.TransportError:
+            except httpx.TransportError as exc:
                 # Connection reset or read timeout: whatever landed in the
                 # staged file is kept, and the next attempt resumes from there.
                 if attempt == _MAX_ATTEMPTS - 1:
+                    _emit_failure(source_name, url, exc, resend_count=attempt + 1)
                     raise
+                _emit_retry(source_name, url, exc, attempt)
                 _sleep_backoff(attempt)
     finally:
         if owns_client:
@@ -339,4 +407,18 @@ def _fetch_locked(
         ingested_at=datetime.now(UTC),
     )
     write_atomic(manifest_file, manifest.model_dump_json(indent=2))
+
+    # Terminal success, only after the manifest lands: before that the artifact
+    # is an orphan, and reporting success would claim a commit that had not
+    # happened.
+    emit(
+        event(
+            EventName.FETCH_PUBLISHED,
+            source=source_name,
+            url_full=url,
+            bytes_total=manifest.size_bytes,
+            member_sha256=manifest.sha256,
+            outcome=Outcome.SUCCESS,
+        )
+    )
     return manifest
