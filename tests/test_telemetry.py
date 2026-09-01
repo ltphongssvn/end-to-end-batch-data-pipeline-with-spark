@@ -257,7 +257,7 @@ def test_naive_timestamp_is_rejected() -> None:
         PipelineEvent.model_validate(
             {
                 "name": EventName.EXTRACTION_STARTED,
-                "occurred_at": datetime.now(),
+                "occurred_at": datetime.now(),  # noqa: DTZ005 - naive IS the input under test
                 "run_id": "a" * 32,
                 "actor": "host:x",
             }

@@ -1,0 +1,17 @@
+# .github/CODEOWNERS
+#
+# Anyone who can merge a change under .github/ can rewrite the entire CI
+# security posture: relax a gate, add a publishing step, widen a token. That
+# makes this directory a higher-trust boundary than the source it builds.
+#
+# Combined with the develop-and-main-protection ruleset, which already requires
+# a pull request and a passing quality gate, this ensures a change to the
+# pipeline's own controls is reviewed rather than merged by whoever touched it.
+#
+# The policies are the same class of artifact: they decide what the codebase is
+# allowed to be, so a change to them must not ride along unnoticed in a feature
+# PR.
+/.github/            @ltphongssvn
+/policies/           @ltphongssvn
+/mise.toml           @ltphongssvn
+/lefthook.yml        @ltphongssvn

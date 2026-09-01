@@ -56,6 +56,19 @@ POLICY_DIR: Final = Path(__file__).resolve().parents[3] / "policies"
 # policy states its own interface; named here because a query needs a string.
 DECISION_QUERY: Final = "data.extraction.decision"
 
+# RESOLVED ONCE, THEN EXECUTED BY ABSOLUTE PATH.
+#
+# Calling shutil.which("opa") to check existence and then
+# subprocess.run(["opa", ...]) to execute resolves the name TWICE, so the
+# check guarantees nothing about what actually runs. CVE-2026-32015 is that
+# exact bug: an allowlist of binary NAMES was bypassed by controlling PATH, so
+# a trojan with an allowlisted name ran despite the validation.
+#
+# Resolving at import and passing the absolute path means the binary that was
+# checked is the binary that runs. It also satisfies ruff S607, which exists
+# for this reason rather than as a style preference.
+_OPA: Final = shutil.which("opa")
+
 _EVAL_TIMEOUT_SECONDS: Final = 30
 
 
@@ -151,15 +164,19 @@ def _run_opa(payload: str) -> str:
     Every failure mode raises: a policy engine that cannot answer must never be
     read as "allowed".
     """
-    if shutil.which("opa") is None:
+    if _OPA is None:
         raise PolicyUnavailableError(
             "opa is not installed; run 'mise install' to get the pinned version"
         )
 
     try:
-        completed = subprocess.run(
+        # S603 acknowledged per-site, not disabled project-wide: argv is a LIST so
+        # no shell is involved, and every element is a module constant or a path
+        # resolved above. The rule stays enabled so the next subprocess call that
+        # DOES take user input is flagged rather than lost in a global ignore.
+        completed = subprocess.run(  # noqa: S603
             [
-                "opa",
+                _OPA,
                 "eval",
                 "--format",
                 "json",
