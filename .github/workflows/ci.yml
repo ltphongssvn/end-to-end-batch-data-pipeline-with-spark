@@ -47,8 +47,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install toolchain from mise.toml
+        # zizmor: ignore[cache-poisoning] this workflow publishes nothing;
+        # see the note above. Revisit if a publishing step is ever added.
         uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
         with:
           # Installs the exact versions recorded in mise.lock: Temurin JDK 17
@@ -76,6 +80,8 @@ jobs:
           command -v java
 
       - name: Restore uv cache
+        # zizmor: ignore[cache-poisoning] this workflow publishes nothing;
+        # see the note on the toolchain step.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/.uv-cache

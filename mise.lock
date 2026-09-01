@@ -211,6 +211,67 @@ checksum = "sha256:fc932e644652d5634bc0d7a5e5f455dd26ebf5b243682a81eddf6d387a901
 url = "https://github.com/open-policy-agent/opa/releases/download/v1.19.1/opa_windows_amd64.exe"
 url_api = "https://api.github.com/repos/open-policy-agent/opa/releases/assets/518113125"
 
+[[tools.osv-scanner]]
+version = "2.5.1"
+backend = "aqua:google/osv-scanner"
+specifiers = ["latest"]
+
+[tools.osv-scanner."platforms.linux-arm64"]
+checksum = "sha256:3d0f5aa5a6baa8eb32bcef247388e149ef6030a6634ccae6fa0d62681fb27a6d"
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_arm64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/517615386"
+
+[tools.osv-scanner."platforms.linux-arm64".provenance.slsa]
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/multiple.intoto.jsonl"
+
+[tools.osv-scanner."platforms.linux-arm64-musl"]
+checksum = "sha256:3d0f5aa5a6baa8eb32bcef247388e149ef6030a6634ccae6fa0d62681fb27a6d"
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_arm64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/517615386"
+
+[tools.osv-scanner."platforms.linux-arm64-musl".provenance.slsa]
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/multiple.intoto.jsonl"
+
+[tools.osv-scanner."platforms.linux-x64"]
+checksum = "sha256:f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be"
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/517615411"
+
+[tools.osv-scanner."platforms.linux-x64".provenance.slsa]
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/multiple.intoto.jsonl"
+
+[tools.osv-scanner."platforms.linux-x64-musl"]
+checksum = "sha256:f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be"
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_linux_amd64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/517615411"
+
+[tools.osv-scanner."platforms.linux-x64-musl".provenance.slsa]
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/multiple.intoto.jsonl"
+
+[tools.osv-scanner."platforms.macos-arm64"]
+checksum = "sha256:75c44d6332f892a1e56286f4105a98ed751ae28d215ca0a8b65cc00d84103054"
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_darwin_arm64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/517615384"
+
+[tools.osv-scanner."platforms.macos-arm64".provenance.slsa]
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/multiple.intoto.jsonl"
+
+[tools.osv-scanner."platforms.macos-x64"]
+checksum = "sha256:9f89beb6c3d784893cb1cae0a3d56c529bfe91075418c2f9440c45b79654198b"
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_darwin_amd64"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/517615385"
+
+[tools.osv-scanner."platforms.macos-x64".provenance.slsa]
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/multiple.intoto.jsonl"
+
+[tools.osv-scanner."platforms.windows-x64"]
+checksum = "sha256:25e42f5ef6711fd8c0fb45390972205891dd44c6bd02ac93f0f63e8e98d9bfb6"
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/osv-scanner_windows_amd64.exe"
+url_api = "https://api.github.com/repos/google/osv-scanner/releases/assets/517615387"
+
+[tools.osv-scanner."platforms.windows-x64".provenance.slsa]
+url = "https://github.com/google/osv-scanner/releases/download/v2.5.1/multiple.intoto.jsonl"
+
 [[tools.regal]]
 version = "0.42.0"
 backend = "aqua:open-policy-agent/regal"
@@ -299,4 +360,45 @@ provenance = "github-attestations"
 checksum = "sha256:4c4d49d8738847d9b71ba319e49a5688c93eac0fe6204b1df24e98528dddf39a"
 url = "https://github.com/astral-sh/uv/releases/download/0.12.5/uv-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/514851084"
+provenance = "github-attestations"
+
+[[tools.zizmor]]
+version = "1.29.0"
+backend = "aqua:zizmorcore/zizmor"
+specifiers = ["latest"]
+
+[tools.zizmor."platforms.linux-arm64"]
+checksum = "sha256:415eaa7c0a06479a701b8e44a3e812c1047decc848ec4bede7bd6bbf49f22d20"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.29.0/zizmor-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/498263143"
+provenance = "github-attestations"
+
+[tools.zizmor."platforms.linux-arm64-musl"]
+provenance = "github-attestations"
+
+[tools.zizmor."platforms.linux-x64"]
+checksum = "sha256:dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.29.0/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/498263145"
+provenance = "github-attestations"
+
+[tools.zizmor."platforms.linux-x64-musl"]
+provenance = "github-attestations"
+
+[tools.zizmor."platforms.macos-arm64"]
+checksum = "sha256:720322fade9e83a9c7953944c438f2ba942636b86b96a8f0e6b15ce94c8a6b6f"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.29.0/zizmor-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/498263141"
+provenance = "github-attestations"
+
+[tools.zizmor."platforms.macos-x64"]
+checksum = "sha256:648b72ab9941a7f2a8d65d7b68a8e76cef789538c8df3a3950384d38423375b0"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.29.0/zizmor-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/498263144"
+provenance = "github-attestations"
+
+[tools.zizmor."platforms.windows-x64"]
+checksum = "sha256:68a6bc6888f10bf0d53658c75885e7c1b7a0588d4c1fbc3f0ca280ad7324bf06"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.29.0/zizmor-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/498263142"
 provenance = "github-attestations"

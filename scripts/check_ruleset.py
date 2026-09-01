@@ -45,6 +45,7 @@ import json
 import shutil
 import subprocess
 import sys
+from typing import Final
 
 REPO = "ltphongssvn/end-to-end-batch-data-pipeline-with-spark"
 PROTECTED_BRANCHES = ("develop", "main")
@@ -58,6 +59,19 @@ REQUIRED_RULES = frozenset(
     {"pull_request", "required_status_checks", "non_fast_forward", "deletion"}
 )
 
+# RESOLVED ONCE, THEN EXECUTED BY ABSOLUTE PATH.
+#
+# Calling shutil.which("gh") to check existence and then
+# subprocess.run(["gh", ...]) to execute resolves the name TWICE, so the
+# check guarantees nothing about what actually runs. CVE-2026-32015 is that
+# exact bug: an allowlist of binary NAMES was bypassed by controlling PATH, so
+# a trojan with an allowlisted name ran despite the validation.
+#
+# Resolving at import and passing the absolute path means the binary that was
+# checked is the binary that runs. It also satisfies ruff S607, which exists
+# for this reason rather than as a style preference.
+_GH: Final = shutil.which("gh")
+
 EXIT_OK = 0
 EXIT_UNPROTECTED = 1
 EXIT_UNDETERMINED = 2
@@ -70,8 +84,12 @@ def _undetermined(message: str) -> int:
 
 def _effective_rules(branch: str) -> set[str] | None:
     """Rule types applying to `branch`, or None if it could not be determined."""
-    result = subprocess.run(
-        ["gh", "api", f"repos/{REPO}/rules/branches/{branch}"],
+    # S603 acknowledged per-site, not disabled project-wide: argv is a LIST so
+    # no shell is involved, and every element is a module constant or a path
+    # resolved above. The rule stays enabled so the next subprocess call that
+    # DOES take user input is flagged rather than lost in a global ignore.
+    result = subprocess.run(  # noqa: S603
+        [_GH, "api", f"repos/{REPO}/rules/branches/{branch}"],
         capture_output=True,
         text=True,
         check=False,
@@ -84,7 +102,7 @@ def _effective_rules(branch: str) -> set[str] | None:
 
 
 def main() -> int:
-    if shutil.which("gh") is None:
+    if _GH is None:
         return _undetermined("gh is not installed")
 
     failures: list[str] = []

@@ -26,11 +26,13 @@ betterleaks = "1.8.1"
 java = "temurin-17"
 lefthook = "2.1.10"
 opa = "1.19.1"
+osv-scanner = "latest"
 regal = "0.42.0"
 
 # uv owns the Python interpreter and dependency graph; mise pins uv itself so the
 # resolver version is reproducible too. Python version lives in .python-version.
 uv = "0.12.5"
+zizmor = "latest"
 
 [settings]
 # mise.lock: exact versions, download URLs, checksums, and provenance,
@@ -109,6 +111,11 @@ depends = [
   # acquisition boundary. Both were conventions nothing enforced until they
   # became gates.
   "check:policy-decisions",
+  # SECURITY CONTROLS AS CODE. The audit found this project policed the DATA
+  # it ingests rigorously and never checked the CODE it executes: 49 locked
+  # dependencies unscanned, bandit rules off, CI workflows never audited.
+  "check:deps",
+  "check:workflows",
   "check:leaks-history",
 ]
 run = "uv run ruff format --check ."
@@ -586,3 +593,33 @@ description = "Evaluate every source-derived policy against the codebase"
 #                  decision would be taken once per attempt, not once per
 #                  artifact.
 run = "uv run python scripts/evaluate_policies.py"
+
+[tasks."check:deps"]
+description = "Scan locked dependencies for known vulnerabilities"
+# THE LARGEST HOLE THE AUDIT FOUND. This project policed the DATA it ingests
+# with a tested policy at 100% coverage and did nothing about the 49 packages
+# it EXECUTES. uv.lock pinned them all; nothing ever asked whether any had a
+# known CVE.
+#
+# osv-scanner reads uv.lock directly and queries OSV.dev, which aggregates
+# GHSA, PyPA and the language-specific databases -- so there is no advisory
+# feed to curate. Clean today; the value is the day it stops being clean.
+run = "osv-scanner scan source --lockfile=uv.lock"
+
+[tasks."check:workflows"]
+description = "Audit GitHub Actions workflows for security misconfigurations"
+# CI had never been audited. zizmor found three findings on first run, one of
+# them genuine: actions/checkout persists GITHUB_TOKEN into .git/config by
+# default, where any later step can read it and any artifact can carry it off
+# the runner.
+#
+# This matters more in 2026 than it reads. Cache poisoning put malware on 4,000
+# developer machines via Cline in February, and in May the untrusted-PR ->
+# poisoned-cache -> memory-dump chain produced 84 malicious TanStack versions
+# in six minutes. Workflow files are executable supply chain.
+#
+# The two cache-poisoning findings here are ignored INLINE with a stated,
+# falsifiable reason: this workflow publishes nothing, which is the condition
+# zizmor's own guidance scopes the fix to. If a publishing step is added, the
+# justification stops being true and the comment says so.
+run = "zizmor .github/workflows/"

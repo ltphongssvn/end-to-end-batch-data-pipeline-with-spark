@@ -74,7 +74,25 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "SIM", "PTH", "RUF"]
+# S IS BANDIT: static application security testing as a lint rule, at zero
+# additional cost because ruff already runs on every commit. Its absence was
+# the largest hole in this project's security posture: the pipeline polices the
+# DATA it ingests with a tested policy at 100% coverage, and nothing checked
+# the CODE for hardcoded credentials, unsafe subprocess use, weak hashes, or
+# unsafe deserialization.
+#
+# DTZ catches naive datetimes. This project already treats a naive timestamp in
+# an attestation as a correctness bug -- AwareDatetime enforces it in the
+# models -- so having the linter enforce it everywhere else costs nothing and
+# removes a class of bug from review.
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "PTH", "RUF", "S", "DTZ"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately construct what the security rules flag: assert statements
+# are the point, fake digests look like hardcoded secrets, and subprocess calls
+# use arguments the test itself controls. Narrow codes rather than a blanket
+# ignore, so a genuine finding in a test still surfaces.
+"tests/**" = ["S101", "S105", "S106", "S603", "S607"]
 
 [tool.mypy]
 # The Pydantic plugin teaches mypy about model __init__ signatures and

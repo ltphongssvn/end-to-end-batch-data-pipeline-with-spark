@@ -33,11 +33,25 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Final
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICY_DIR = REPO_ROOT / "policies"
 INVENTORY = REPO_ROOT / "scripts" / "instrumentation_inventory.py"
 DECISION_QUERY = "data.main.decision"
+
+# RESOLVED ONCE, THEN EXECUTED BY ABSOLUTE PATH.
+#
+# Calling shutil.which("opa") to check existence and then
+# subprocess.run(["opa", ...]) to execute resolves the name TWICE, so the
+# check guarantees nothing about what actually runs. CVE-2026-32015 is that
+# exact bug: an allowlist of binary NAMES was bypassed by controlling PATH, so
+# a trojan with an allowlisted name ran despite the validation.
+#
+# Resolving at import and passing the absolute path means the binary that was
+# checked is the binary that runs. It also satisfies ruff S607, which exists
+# for this reason rather than as a style preference.
+_OPA: Final = shutil.which("opa")
 
 EXIT_OK = 0
 EXIT_VIOLATION = 1
@@ -50,18 +64,26 @@ def _undetermined(message: str) -> int:
 
 
 def main() -> int:
-    if shutil.which("opa") is None:
+    if _OPA is None:
         return _undetermined("opa is not installed; run 'mise install'")
 
-    built = subprocess.run(
+    # S603 acknowledged per-site, not disabled project-wide: argv is a LIST so
+    # no shell is involved, and every element is a module constant or a path
+    # resolved above. The rule stays enabled so the next subprocess call that
+    # DOES take user input is flagged rather than lost in a global ignore.
+    built = subprocess.run(  # noqa: S603
         [sys.executable, str(INVENTORY)], capture_output=True, text=True, check=False
     )
     if built.returncode != 0:
         return _undetermined(f"inventory generation failed:\n{built.stderr.strip()}")
 
-    evaluated = subprocess.run(
+    # S603 acknowledged per-site, not disabled project-wide: argv is a LIST so
+    # no shell is involved, and every element is a module constant or a path
+    # resolved above. The rule stays enabled so the next subprocess call that
+    # DOES take user input is flagged rather than lost in a global ignore.
+    evaluated = subprocess.run(  # noqa: S603
         [
-            "opa",
+            _OPA,
             "eval",
             "--format",
             "json",
