@@ -33,7 +33,12 @@ clean_atomicio := {
 
 spark_owner := {"path": "session.py", "effective_imports": ["delta", "pyspark"]}
 
-valid_inventory := {"modules": [clean_extract, clean_fetch, clean_atomicio, spark_owner]}
+locked_ok := {"protobuf": "7.36.0", "pyspark": "4.0.4", "dagster-pipes": "1.13.19"}
+
+valid_inventory := {
+	"modules": [clean_extract, clean_fetch, clean_atomicio, spark_owner],
+	"locked_packages": locked_ok,
+}
 
 # --- The happy path ----------------------------------------------------------
 
@@ -156,4 +161,58 @@ test_spark_owners_is_not_empty if {
 	# An empty owner list would forbid Spark everywhere, which is not a
 	# boundary but a shutdown.
 	count(architecture.spark_owners) > 0
+}
+
+# --- The lockfile, which is where the real risk lives -----------------------
+
+test_orchestrator_in_lockfile_denies if {
+	# THE CASE THE RESOLVER DID NOT CATCH. `uv add dagster` with the protobuf
+	# constraint in place did not fail: uv held protobuf at 7.x and satisfied
+	# it by installing dagster 1.3.10, a 2023 release. uv documents this --
+	# "instead of failing, the resolver will pick an older version without the
+	# bound, circumventing the bound". A silent three-year backslide looks like
+	# success, so presence is the check, not version.
+	polluted := json.patch(valid_inventory, [{
+		"op": "add",
+		"path": "/locked_packages/dagster",
+		"value": "1.3.10",
+	}])
+	not architecture.allow with input as polluted
+}
+
+test_orchestrator_reason_names_the_version if {
+	polluted := json.patch(valid_inventory, [{
+		"op": "add",
+		"path": "/locked_packages/dagster",
+		"value": "1.3.10",
+	}])
+	expected := "uv.lock contains dagster (1.3.10) -- the orchestrator belongs in its own code location"
+	expected in architecture.deny with input as polluted
+}
+
+test_dagster_pipes_is_allowed if {
+	# The positive case, and the whole point of the isolation: dagster-pipes
+	# resolves to exactly one package with no dependencies, so the pipeline can
+	# report to an orchestrator without hosting one.
+	architecture.allow with input as valid_inventory
+}
+
+test_protobuf_downgrade_denies if {
+	# The invariant the boundary exists to protect. Asserted directly so a
+	# downgrade arriving through ANY transitive path is caught.
+	downgraded := json.patch(valid_inventory, [{
+		"op": "replace",
+		"path": "/locked_packages/protobuf",
+		"value": "6.33.6",
+	}])
+	not architecture.allow with input as downgraded
+}
+
+test_protobuf_7x_is_allowed if {
+	current := json.patch(valid_inventory, [{
+		"op": "replace",
+		"path": "/locked_packages/protobuf",
+		"value": "7.40.1",
+	}])
+	architecture.allow with input as current
 }

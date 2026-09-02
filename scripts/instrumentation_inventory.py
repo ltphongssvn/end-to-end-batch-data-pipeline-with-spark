@@ -184,6 +184,38 @@ def inventory(root: Path = PACKAGE_ROOT) -> list[dict[str, object]]:
     return modules
 
 
+LOCKFILE = PACKAGE_ROOT.parents[1] / "uv.lock"
+
+
+def locked_packages() -> dict[str, str]:
+    """Every package uv resolved, name -> version, read from uv.lock.
+
+    WHY THE LOCKFILE AND NOT THE IMPORTS. An import check catches
+    `import dagster` and completely misses `uv add dagster` -- and the damage
+    is done by the INSTALL, not the import. Resolving dagster here downgrades
+    protobuf from 7.36.0 to 6.33.6 underneath a Spark Connect client, which
+    surfaces as UDFs failing against Databricks rather than as any import a
+    parser could see.
+
+    Parsed with a narrow reader rather than a TOML library because the shape
+    needed is two fields per [[package]] block, and adding a dependency to the
+    script that guards dependencies is its own small irony.
+    """
+    if not LOCKFILE.is_file():
+        return {}
+
+    packages: dict[str, str] = {}
+    name = ""
+    for line in LOCKFILE.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("name = "):
+            name = stripped.split('"')[1]
+        elif stripped.startswith("version = ") and name:
+            packages[name] = stripped.split('"')[1]
+            name = ""
+    return packages
+
+
 def main() -> int:
     if not PACKAGE_ROOT.is_dir():
         print(f"package root not found: {PACKAGE_ROOT}", file=sys.stderr)
@@ -196,7 +228,8 @@ def main() -> int:
         print("inventory is empty; refusing a vacuous result", file=sys.stderr)
         return 1
 
-    print(json.dumps({"modules": modules}, indent=2, sort_keys=True))
+    payload = {"modules": modules, "locked_packages": locked_packages()}
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
