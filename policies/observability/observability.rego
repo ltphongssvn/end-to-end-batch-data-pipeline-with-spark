@@ -48,6 +48,10 @@ policy_version := "observability-policy/v1"
 instrumented_modules := {
 	"ingest/fetch.py",
 	"ingest/extract.py",
+	# The orchestrator. It emits the handoff announcing that the URI is safe to
+	# read, so a silent acquire_source would leave every downstream consumer
+	# guessing whether the pipeline had run at all.
+	"ingest/acquire.py",
 }
 
 # Legitimately silent, each with its reason.

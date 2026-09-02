@@ -15,7 +15,9 @@
         "extraction.denied",
         "extraction.verified",
         "extraction.published",
-        "extraction.failed"
+        "extraction.failed",
+        "raw_artifact.ready",
+        "acquisition.failed"
       ],
       "title": "EventName",
       "type": "string"
@@ -237,6 +239,18 @@
       ],
       "default": null,
       "title": "Source"
+    },
+    "uri": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Uri"
     },
     "url_full": {
       "anyOf": [
