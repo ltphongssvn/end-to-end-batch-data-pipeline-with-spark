@@ -67,6 +67,26 @@ forbidden_in_ingest := {
 # inferred, so adding a second one is a deliberate and reviewable act.
 spark_owners := {"session.py"}
 
+# THE ORCHESTRATOR MUST NOT ENTER THIS ENVIRONMENT.
+#
+# Resolving `dagster` alongside this stack downgrades protobuf from 7.36.0 to
+# 6.33.6 -- a MAJOR version, underneath a Spark Connect client whose whole
+# premise is matching the Databricks server. That is the drift class this
+# project pins everything to prevent, and it would appear as UDFs failing at
+# runtime rather than as a resolution error.
+#
+# Dagster's own architecture is the fix: the orchestrator runs in a separate
+# code location, and this environment carries only `dagster-pipes`, which
+# resolves to exactly one package with no dependencies. Verified: protobuf
+# stays at 7.36.0.
+#
+# `uv add dagster` here is therefore a layer violation, not a preference.
+forbidden_everywhere := {
+	"dagster": "the orchestrator belongs in its own code location",
+	"dagster-webserver": "orchestration UI, same isolation boundary",
+	"dagster-graphql": "orchestration API, same isolation boundary",
+}
+
 # --- Input completeness ------------------------------------------------------
 # A rule referencing a missing field is undefined and contributes no denial, so
 # an inventory that failed to generate must fail rather than pass silently.
@@ -95,6 +115,44 @@ deny contains reason if {
 	some dependency, why in forbidden_in_ingest
 	dependency in module.effective_imports
 	reason := sprintf("%v reaches %v -- %v", [module.path, dependency, why])
+}
+
+# PRESENCE IN THE LOCKFILE, NOT VERSION -- and that distinction was measured,
+# not assumed.
+#
+# An import rule catches `import dagster` and misses `uv add dagster`, because
+# the damage is done by the INSTALL. A protobuf version check is also not
+# enough: running `uv add dagster` with the resolver constraint in place did
+# NOT fail. uv held protobuf at 7.x and satisfied it by installing dagster
+# 1.3.10 -- a 2023 release -- instead of 1.13.19.
+#
+# uv documents this: "instead of failing, the resolver will pick an older
+# version without the bound, circumventing the bound", and warns it "can end up
+# picking a version that's old enough that it doesn't depend on the conflicting
+# package, but also doesn't work with your code". Two 2026 incidents show the
+# same class shipping: limacharlie stranded users on 5.3.0 where a stale
+# install self-reports as current, and DANDI resolved a client so old it
+# crashed on first call.
+#
+# A silent three-year backslide looks like success. Presence is the check.
+deny contains reason if {
+	some dependency, why in forbidden_everywhere
+	input.locked_packages[dependency]
+	reason := sprintf(
+		"uv.lock contains %v (%v) -- %v",
+		[dependency, input.locked_packages[dependency], why],
+	)
+}
+
+# The version this boundary exists to protect, asserted directly so a downgrade
+# arriving through ANY path is caught rather than only the one predicted.
+deny contains reason if {
+	version := input.locked_packages.protobuf
+	not startswith(version, "7.")
+	reason := sprintf(
+		"protobuf is %v; Spark Connect 4.0 runs against the 7.x line and a downgrade breaks UDFs on Databricks",
+		[version],
+	)
 }
 
 # Spark outside its declared owner is boundary erosion even when the module is

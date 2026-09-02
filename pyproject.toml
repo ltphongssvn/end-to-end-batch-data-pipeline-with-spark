@@ -27,6 +27,7 @@ dependencies = [
   "pyyaml>=6.0.3",
   "types-pyyaml>=6.0.12.20260815",
   "httpx>=0.28.1",
+  "dagster-pipes>=1.13.19",
 ]
 
 [build-system]
@@ -61,6 +62,24 @@ dev = [
 ]
 
 [tool.uv]
+# RESOLVER-LEVEL BOUNDARY, not a CI check after the fact.
+#
+# `uv add dagster` silently downgrades protobuf from 7.36.0 to 6.33.6 -- a
+# MAJOR version, underneath a Spark Connect client whose entire premise is
+# matching the Databricks serverless runtime. That failure appears as UDFs
+# breaking against Databricks, long after the commit that caused it.
+#
+# A CONSTRAINT, not an override. Constraints narrow the acceptable range and
+# only apply to packages already being pulled in, so resolution FAILS loudly
+# instead of proceeding with an incompatible version. Overrides do the
+# opposite -- they replace declared requirements and install versions a library
+# never tested against, which is why they are treated as technical debt.
+#
+# The Rego policy asserts the same invariant against uv.lock, because uv has a
+# known case (astral-sh/uv#18337) where a constraint is skipped for a
+# transitive dependency carrying markers. Resolver first, verification second.
+constraint-dependencies = ["protobuf>=7,<8"]
+
 # Refuse dependency releases younger than one week: yanked builds, bad metadata,
 # and compromised packages surface before we consume them.
 exclude-newer = "1 week"

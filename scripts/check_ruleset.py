@@ -83,7 +83,15 @@ def _undetermined(message: str) -> int:
 
 
 def _effective_rules(branch: str) -> set[str] | None:
-    """Rule types applying to `branch`, or None if it could not be determined."""
+    """Rule types applying to `branch`, or None if it could not be determined.
+
+    Re-checks _GH rather than relying on main()'s guard. mypy flagged the gap
+    and was right: this function is callable on its own, so the narrowing has
+    to happen where the value is USED. A cast would have silenced the checker
+    while leaving the None path reachable.
+    """
+    if _GH is None:
+        return None
     # S603 acknowledged per-site, not disabled project-wide: argv is a LIST so
     # no shell is involved, and every element is a module constant or a path
     # resolved above. The rule stays enabled so the next subprocess call that
