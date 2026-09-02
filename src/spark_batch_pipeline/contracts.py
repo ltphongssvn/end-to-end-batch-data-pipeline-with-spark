@@ -27,6 +27,10 @@ from typing import Final
 
 from pydantic import BaseModel
 
+from spark_batch_pipeline.ingest.acquire import (
+    RAW_ARTIFACT_VERSION,
+    RawArtifact,
+)
 from spark_batch_pipeline.ingest.extract import (
     EXTRACT_RECORD_VERSION,
     ExtractionRecord,
@@ -58,6 +62,17 @@ CONTRACTS: Final[dict[str, type[BaseModel]]] = {
     f"{SCHEMA_VERSION.replace('/', '-')}.schema.json": WdiProbeResult,
     f"{INGEST_MANIFEST_VERSION.replace('/', '-')}.schema.json": IngestManifest,
     f"{EXTRACT_RECORD_VERSION.replace('/', '-')}.schema.json": ExtractionRecord,
+    # THE HANDOFF, and publishing it is a deliberate declaration rather than
+    # a reflex. The consumer is a Dagster asset in a SEPARATE environment
+    # with its own lockfile -- it cannot import this package, so the JSON
+    # Schema is the only thing it can consume. Services share a schema and
+    # contract, not a class.
+    #
+    # No separate DTO: the model IS the wire shape, and a parallel struct
+    # with no divergence to justify it would be duplication. If the internal
+    # model ever needs a shape the wire cannot follow, that is the moment to
+    # split them -- not before.
+    f"{RAW_ARTIFACT_VERSION.replace('/', '-')}.schema.json": RawArtifact,
     # Telemetry is a contract like any other: an event whose shape drifts
     # breaks every query and dashboard built on it, silently.
     f"{PIPELINE_EVENT_VERSION.replace('/', '-')}.schema.json": PipelineEvent,

@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "RawArtifactVersion": {
+      "const": "raw-artifact/v1",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A committed file a consumer may read, with the identity that makes it\ntrustworthy.\n\nRETURNED, not merely announced. An event alone would leave the reader to\nreconstruct a path, which is how a consumer ends up building the filename\nitself and drifting from what was actually written.",
+  "properties": {
+    "archive_sha256": {
+      "description": "SHA-256 digest, 64 lowercase hex digits",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Archive Sha256",
+      "type": "string"
+    },
+    "member_sha256": {
+      "description": "SHA-256 digest, 64 lowercase hex digits",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Member Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "$ref": "#/$defs/RawArtifactVersion",
+      "default": "raw-artifact/v1"
+    },
+    "size_bytes": {
+      "description": "Size in bytes",
+      "minimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "uri": {
+      "description": "Non-empty filesystem path, recorded for provenance",
+      "minLength": 1,
+      "title": "Uri",
+      "type": "string"
+    }
+  },
+  "required": [
+    "uri",
+    "member_sha256",
+    "archive_sha256",
+    "size_bytes"
+  ],
+  "title": "RawArtifact",
+  "type": "object"
+}

@@ -119,6 +119,17 @@ class EventName(StrEnum):
     EXTRACTION_PUBLISHED = "extraction.published"
     EXTRACTION_FAILED = "extraction.failed"
 
+    # THE HANDOFF. Everything upstream is committed when this fires, so it
+    # is the first moment a consumer may read the file. A consumer becomes
+    # a reader of state rather than the owner of the side effect that
+    # produced it.
+    RAW_ARTIFACT_READY = "raw_artifact.ready"
+
+    # The sequence failed as a whole. fetch and extract each report their
+    # own failure, and neither tells a consumer waiting on the handoff why
+    # it never arrived.
+    ACQUISITION_FAILED = "acquisition.failed"
+
 
 class Outcome(StrEnum):
     """Terminal disposition, so a query counts failures without parsing text."""
@@ -212,6 +223,11 @@ class PipelineEvent(BaseModel):
     # under http.* would blur spec-defined and locally-invented attributes.
     resumed_from_bytes: int | None = Field(default=None, ge=0)
     source: str | None = None
+
+    # WHERE THE COMMITTED BYTES ARE. Carried on the handoff event so a
+    # consumer never reconstructs the path itself and drifts from what was
+    # actually written.
+    uri: str | None = None
 
     outcome: Outcome | None = None
 

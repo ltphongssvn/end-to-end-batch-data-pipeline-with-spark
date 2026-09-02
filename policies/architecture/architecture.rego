@@ -53,6 +53,10 @@ ingest_layer := {
 	"ingest/extract.py",
 	"ingest/policy.py",
 	"ingest/probe.py",
+	# The application layer of the boundary. It composes the others and must
+	# stay Spark-free for the same reason they do: it runs once, on the driver,
+	# before any consumer reads.
+	"ingest/acquire.py",
 	"atomicio.py",
 }
 
